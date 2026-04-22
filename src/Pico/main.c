@@ -261,15 +261,20 @@ int main(void) {
 #endif
 
 #if FRANK_MSX_MODEL == 3
-    Mode      = MSX_MSX2P | MSX_NTSC | MSX_GUESSA | MSX_GUESSB;
-    RAMPages  = 4;   /* 64 kB main RAM   */
-    VRAMPages = 8;   /* 128 kB VRAM      */
+    /* MSX2+ defaults: PAL region, 512 kB main RAM, 512 kB VRAM.
+     * Some MegaROMs (e.g. Castlevania ROM hack of Vampire Killer)
+     * hang on NTSC-60 Hz or <512 kB configs — their H.TIMI handler
+     * assumes European PAL timing and mapper regions beyond bank 3.
+     * PSRAM has plenty of room for max-size RAM+VRAM. */
+    Mode      = MSX_MSX2P | MSX_PAL | MSX_GUESSA | MSX_GUESSB;
+    RAMPages  = 32;  /* 512 kB main RAM  */
+    VRAMPages = 32;  /* 512 kB VRAM      */
 #elif FRANK_MSX_MODEL == 2
-    Mode      = MSX_MSX2 | MSX_NTSC | MSX_GUESSA | MSX_GUESSB;
-    RAMPages  = 4;
-    VRAMPages = 8;
+    Mode      = MSX_MSX2 | MSX_PAL | MSX_GUESSA | MSX_GUESSB;
+    RAMPages  = 32;  /* 512 kB main RAM (matches Philips NMS-8280)   */
+    VRAMPages = 8;   /* 128 kB VRAM                                  */
 #else
-    Mode      = MSX_MSX1 | MSX_NTSC | MSX_GUESSA | MSX_GUESSB;
+    Mode      = MSX_MSX1 | MSX_PAL | MSX_GUESSA | MSX_GUESSB;
     RAMPages  = 4;   /* 64 kB main RAM */
     VRAMPages = 2;   /* 32 kB VRAM     */
 #endif

@@ -11,9 +11,9 @@
 
 msx_settings_t g_settings = {
     .model     = 2,                 /* MSX2+ — matches main.c default */
-    .region    = 0,                 /* NTSC */
-    .ram       = 0,                 /* 64 kB */
-    .vram      = 2,                 /* 128 kB */
+    .region    = 1,                 /* PAL   — matches main.c default */
+    .ram       = 3,                 /* 512 kB — matches main.c default */
+    .vram      = 4,                 /* 512 kB — matches main.c default */
     .joy1      = 1,                 /* Joystick */
     .joy2      = 1,                 /* Joystick */
     .scanlines = MSX_SCAN_OFF,
@@ -179,7 +179,11 @@ void msx_settings_init_from_bootstate(void) {
     g_settings.joy1   = (Mode >> 4) & 0x03;
     g_settings.joy2   = (Mode >> 6) & 0x03;
 
-    /* Pick the RAM/VRAM choice that matches the live page count. */
+    /* Pick the RAM/VRAM choice that matches the live page count.
+     * If no match (e.g. non-standard size), keep the existing
+     * g_settings value rather than silently falling back to a
+     * smaller one — falling back to 64 kB on MSX2+ triggers the
+     * Vampire Killer mapper-range hang. */
     for (size_t i = 0; i < sizeof(RAM_PAGES)/sizeof(RAM_PAGES[0]); ++i)
         if (RAMPages == RAM_PAGES[i]) { g_settings.ram = (uint8_t)i; break; }
     for (size_t i = 0; i < sizeof(VRAM_PAGES)/sizeof(VRAM_PAGES[0]); ++i)

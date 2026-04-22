@@ -508,7 +508,6 @@ int StartMSX(int NewMode,int NewRAMPages,int NewVRAMPages)
 
   if(Verbose) printf("Loading optional ROMs: ");
 
-#ifndef FRANK_MSX_NO_OPTIONAL_ROMS
   /* Try loading CMOS memory contents */
   if(LoadROM("CMOS.ROM",sizeof(RTC),(byte *)RTC))
   { if(Verbose) printf("CMOS.ROM.."); }
@@ -525,19 +524,12 @@ int StartMSX(int NewMode,int NewRAMPages,int NewVRAMPages)
     MemMap[3][3][2]=P;
     MemMap[3][3][3]=P+0x2000;
   }
-#else
-  /* Use default CMOS contents, skip KANJI/RS232 scan to avoid SD I/O. */
-  memcpy(RTC,RTCInit,sizeof(RTC));
-#endif
 
   PRINTOK;
 
-  /* Start loading system cartridges. We always load FMPAC so MSX-MUSIC
-   * games hear FM; the heavier optional carts (MSXDOS2 / PAINTER /
-   * GMASTER) are skipped when FRANK_MSX_NO_OPTIONAL_ROMS is set. */
+  /* Start loading system cartridges */
   J=MAXCARTS;
 
-#ifndef FRANK_MSX_NO_OPTIONAL_ROMS
   /* If MSX2 or better and DiskROM present...  */
   /* ...try loading MSXDOS2 cartridge into 3:0 */
   if(!MODEL(MSX_MSX1)&&OPTION(MSX_MSXDOS2)&&(MemMap[3][1][2]!=EmptyRAM)&&!ROMData[2])
@@ -550,15 +542,11 @@ int StartMSX(int NewMode,int NewRAMPages,int NewVRAMPages)
     for(;(J<MAXSLOTS)&&ROMData[J];++J);
     if((J<MAXSLOTS)&&LoadCart("PAINTER.ROM",J,0)) ++J;
   }
-#endif
 
-  /* Load FMPAC cartridge — required for games that use MSX-MUSIC (FM)
-   * because they detect the chip via the FMPAC ROM's signature rather
-   * than via raw port 0x7C/0x7D access. */
+  /* Load FMPAC cartridge */
   for(;(J<MAXSLOTS)&&ROMData[J];++J);
   if((J<MAXSLOTS)&&LoadCart("FMPAC.ROM",J,MAP_FMPAC)) ++J;
 
-#ifndef FRANK_MSX_NO_OPTIONAL_ROMS
   /* Load Konami GameMaster2/GameMaster cartridges */
   for(;(J<MAXSLOTS)&&ROMData[J];++J);
   if(J<MAXSLOTS)
@@ -566,7 +554,6 @@ int StartMSX(int NewMode,int NewRAMPages,int NewVRAMPages)
     if(LoadCart("GMASTER2.ROM",J,MAP_GMASTER2)) ++J;
     else if(LoadCart("GMASTER.ROM",J,0)) ++J;
   }
-#endif
 
   /* We are now back to working directory */
   if(WorkDir && chdir(WorkDir))

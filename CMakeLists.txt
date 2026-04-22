@@ -164,7 +164,6 @@ target_compile_definitions(frank-msx PRIVATE
     # is 16 (= MIDI_CHANNELS), which would silently truncate OPLL.
     SND_CHANNELS=20
     MIDI_CHANNELS=20
-    FRANK_MSX_NO_OPTIONAL_ROMS=1  # skip CMOS/KANJI/RS232/MSXDOS2/PAINTER/FMPAC/GMASTER probe
     FRANK_MSX_PSRAM=1             # route all MSX chunk allocations to 8 MB PSRAM
     FRANK_MSX_MODEL=${MSX_MODEL}
     FRANK_MSX_SOFT_LIMITER=1      # 4:1 soft-knee limiter in place of hard int16 clamp

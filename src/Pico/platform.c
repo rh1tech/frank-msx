@@ -539,6 +539,23 @@ unsigned int Joystick(void) {
     /* Copy the accumulated key state into the MSX matrix. */
     memcpy((void *)KeyState, (const void *)XKeyState, sizeof(KeyState));
 
+    /* Pace every MSX frame (not just drawn frames). LoopZ80 calls
+     * Joystick() once per MSX frame at scanline 192, so spinning to
+     * the deadline here locks virtual-MSX time to wall-clock time.
+     * PutImage()'s WaitSyncTimer runs at UPeriod/100 × SyncFreq
+     * (45 Hz at UPeriod=75) which is too loose to stop a fast Z80
+     * from racing ahead between drawn frames.
+     *
+     * Target rate adapts to PAL/NTSC — VDP[9] bit 1 is set when PAL
+     * video is selected. If it drifted from the initial SetSyncTimer
+     * value (e.g. BIOS re-programmed VDP[9] mid-boot), refresh the
+     * pacer target to match. */
+    if (SyncFreq > 0 && !FastForward) {
+        int want = (VDP[9] & 0x02) ? 50 : 60;
+        if (g_sync_hz != want) SetSyncTimer(want);
+        WaitSyncTimer();
+    }
+
     unsigned int I = 0;
     if (J & BTN_LEFT)  I |= JST_LEFT;
     if (J & BTN_RIGHT) I |= JST_RIGHT;
@@ -581,11 +598,9 @@ void PutImage(void) {
         msx_ui_render((uint8_t *)NormScreen.Data, WIDTH, HEIGHT);
     }
 
-    /* Pace the emulator to the configured vsync rate. The repeating
-     * Pico alarm set up in SetSyncTimer() sets g_sync_tick every
-     * 1/SyncFreq seconds; WaitSyncTimer() spins until then and
-     * consumes the latch. */
-    if (SyncFreq > 0) WaitSyncTimer();
+    /* Pacing lives in Joystick() — fires once per MSX frame at
+     * scanline 192, regardless of UPeriod, so frame-skipping doesn't
+     * change emulation speed. */
 
     uint32_t next = current_buffer ^ 1;
 
@@ -649,7 +664,11 @@ int InitMachine(void) {
     printf("sound: MAXCHANNELS=%d SndSwitch=0x%05X volume=%d rate=%d\n",
            MAXCHANNELS, (unsigned)SndSwitch, SndVolume, UseSound);
 
-    if (SyncFreq > 0 && !SetSyncTimer(SyncFreq * UPeriod / 100)) SyncFreq = 0;
+    /* Match the MSX's internal framerate: PAL = 50 Hz, NTSC = 60 Hz.
+     * Re-computed on every ResetMSX() via Joystick()'s adaptive rate
+     * adjustment (see below), so this initial value just needs to be
+     * in the right ballpark. */
+    if (SyncFreq > 0 && !SetSyncTimer((Mode & MSX_PAL) ? 50 : 60)) SyncFreq = 0;
 
     msx_ui_init();
     /* Apply default visual settings (pass-through filter, CRT off).
