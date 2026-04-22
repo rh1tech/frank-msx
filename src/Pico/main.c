@@ -65,23 +65,85 @@ static void __no_inline_not_in_flash_func(set_flash_timings)(int cpu_mhz, int fl
                         | ((uint32_t)divisor  << QMI_M0_TIMING_CLKDIV_LSB);
 }
 
-/* ---- Render core (Core 1): boots audio + HDMI then idles ------------- */
+/* ---- Audio path --------------------------------------------------------
+ *
+ * Producer (core 0): platform.c WriteAudio() writes mono 16-bit samples
+ * at UseSound = 22050 Hz into g_audio_ring. Each sample is duplicated
+ * into an L/R pair (stereo) on its way into the ring.
+ *
+ * Consumer (core 1): render_core() pulls AUDIO_FRAMES_PER_CHUNK frames
+ * at a time and hands them to i2s_dma_write, which blocks on DMA
+ * buffer availability. When the producer falls behind we zero-fill so
+ * the I2S stream never truncates.
+ *
+ * Lock-free SPSC ring with a power-of-two size and 32-bit indices. */
+#define AUDIO_SAMPLE_RATE       22050
+#define AUDIO_FRAMES_PER_CHUNK  367                     /* ≈ 22050 / 60 */
+#define AUDIO_RING_FRAMES       (1u << 12)              /* 4096 frames ≈ 186 ms */
+#define AUDIO_RING_MASK         (AUDIO_RING_FRAMES - 1)
+
+static uint32_t __attribute__((aligned(4))) g_audio_ring[AUDIO_RING_FRAMES];
+static volatile uint32_t g_audio_prod = 0;  /* core 0 writes */
+static volatile uint32_t g_audio_cons = 0;  /* core 1 reads  */
+
+/* Producer API — called from platform.c:WriteAudio(). Samples are 16-bit
+ * signed mono; we broadcast into L+R. Returns samples written (drops on
+ * overflow rather than blocking core 0). */
+unsigned audio_ring_push_mono(const int16_t *samples, unsigned count) {
+    uint32_t prod = g_audio_prod;
+    uint32_t cons = g_audio_cons;
+    uint32_t free = AUDIO_RING_FRAMES - (prod - cons);
+    if (count > free) count = free;
+    for (unsigned i = 0; i < count; ++i) {
+        int16_t s = samples[i];
+        g_audio_ring[(prod + i) & AUDIO_RING_MASK] =
+            ((uint32_t)(uint16_t)s << 16) | (uint16_t)s;
+    }
+    __dmb();
+    g_audio_prod = prod + count;
+    return count;
+}
+
+unsigned audio_ring_free(void) {
+    return AUDIO_RING_FRAMES - (g_audio_prod - g_audio_cons);
+}
+
+/* ---- Render core (Core 1): boots audio + drains the ring ------------- */
 static volatile bool core1_ready = false;
 
 void __time_critical_func(render_core)(void) {
     static i2s_config_t i2s_cfg;
     i2s_cfg = i2s_get_default_config();
-    i2s_cfg.sample_freq = 22050;
-    i2s_cfg.dma_trans_count = 367; /* 22050/60 ≈ 367 frames per 60Hz slot */
+    i2s_cfg.sample_freq     = AUDIO_SAMPLE_RATE;
+    i2s_cfg.dma_trans_count = AUDIO_FRAMES_PER_CHUNK;
     i2s_volume(&i2s_cfg, 0);
     i2s_init(&i2s_cfg);
+
+    /* Staging buffer the DMA driver can memcpy from. Lives in SRAM. */
+    static uint32_t __attribute__((aligned(32))) chunk[AUDIO_FRAMES_PER_CHUNK];
 
     __dmb();
     core1_ready = true;
     __dmb();
 
-    /* Keep core 1 alive so audio DMA IRQs stay serviced. */
-    while (true) tight_loop_contents();
+    while (true) {
+        uint32_t prod = g_audio_prod;
+        uint32_t cons = g_audio_cons;
+        uint32_t avail = prod - cons;
+
+        if (avail >= AUDIO_FRAMES_PER_CHUNK) {
+            for (uint32_t i = 0; i < AUDIO_FRAMES_PER_CHUNK; ++i)
+                chunk[i] = g_audio_ring[(cons + i) & AUDIO_RING_MASK];
+            __dmb();
+            g_audio_cons = cons + AUDIO_FRAMES_PER_CHUNK;
+        } else {
+            /* Underrun — feed silence; i2s_dma_write will still pace us
+             * via DMA buffer availability so we don't busy-spin. */
+            for (uint32_t i = 0; i < AUDIO_FRAMES_PER_CHUNK; ++i)
+                chunk[i] = 0;
+        }
+        i2s_dma_write(&i2s_cfg, (const int16_t *)chunk);
+    }
 }
 
 /* ---- Entry point ----------------------------------------------------- */

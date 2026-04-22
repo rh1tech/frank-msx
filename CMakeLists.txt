@@ -111,6 +111,11 @@ set(PICO_PORT
     src/Pico/platform.c
     src/Pico/msx_bios.c
     src/Pico/pico_fatfs_io.c
+    src/Pico/ui_font.c
+    src/Pico/ui_draw.c
+    src/Pico/msx_loader.c
+    src/Pico/msx_ui.c
+    src/Pico/msx_settings.c
 )
 
 add_executable(frank-msx
@@ -147,10 +152,16 @@ target_compile_definitions(frank-msx PRIVATE
     # fMSX / EMULib configuration
     LSB_FIRST=1
     BPP8=1
+    BPS16=1                 # 16-bit signed audio samples (for I2S path)
     NARROW=1                # skip WideScreen buffer (saves RAM)
+    # AY(6) + SCC(5) + OPLL(9) = 20 sound channels. Default SND_CHANNELS
+    # is 16 (= MIDI_CHANNELS), which would silently truncate OPLL.
+    SND_CHANNELS=20
+    MIDI_CHANNELS=20
     FRANK_MSX_NO_OPTIONAL_ROMS=1  # skip CMOS/KANJI/RS232/MSXDOS2/PAINTER/FMPAC/GMASTER probe
     FRANK_MSX_PSRAM=1             # route all MSX chunk allocations to 8 MB PSRAM
     FRANK_MSX_MODEL=${MSX_MODEL}
+    FRANK_MSX_SOFT_LIMITER=1      # 4:1 soft-knee limiter in place of hard int16 clamp
 )
 
 # Peripheral pins per board variant (must match driver expectations).

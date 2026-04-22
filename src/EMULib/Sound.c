@@ -161,6 +161,29 @@ unsigned int GetSndRate(void) { return(SndRate); }
 /*************************************************************/
 void Sound(int Channel,int Freq,int Volume)
 {
+#ifdef FRANK_MSX_DEBUG_SOUND
+  /* Log the first time any channel is hit AND the first time each
+   * channel crosses into "audible" (freq and vol both > 0). The
+   * two-stage log tells us whether Sound() is being called at all
+   * (hit mask) vs whether the chip ever asked for an audible tone
+   * (audible mask). */
+  {
+    static unsigned seen_hit = 0;
+    static unsigned seen_aud = 0;
+    if (Channel >= 0 && Channel < 32) {
+      if (!((seen_hit >> Channel) & 1)) {
+        seen_hit |= 1u << Channel;
+        printf("snd: ch=%d hit   freq=%d vol=%d type=0x%x\n",
+               Channel, Freq, Volume, (unsigned)WaveCH[Channel].Type);
+      }
+      if (Freq > 0 && Volume > 0 && !((seen_aud >> Channel) & 1)) {
+        seen_aud |= 1u << Channel;
+        printf("snd: ch=%d audib freq=%d vol=%d type=0x%x\n",
+               Channel, Freq, Volume, (unsigned)WaveCH[Channel].Type);
+      }
+    }
+  }
+#endif
   /* All parameters have to be valid */
   if((Channel<0)||(Channel>=SND_CHANNELS)) return;
   Freq   = Freq<0? 0:Freq;
@@ -859,7 +882,22 @@ unsigned int PlayAudio(int *Wave,unsigned int Samples)
     for(I=0;I<J;++I)
     {
       D      = ((*Wave++)*MasterVolume)>>8;
+#ifdef FRANK_MSX_SOFT_LIMITER
+      /* Soft limiter: compress anything beyond ±24576 (75% FS) instead
+       * of hard clipping. Keeps busy mixes loud without mangling them.
+       * Formula: above the knee, compress 4:1 towards ±32767. */
+      {
+        int sign = D < 0 ? -1 : 1;
+        int mag  = D < 0 ? -D : D;
+        if (mag > 24576) {
+          mag = 24576 + (mag - 24576) / 4;
+          if (mag > 32767) mag = 32767;
+        }
+        D = sign * mag;
+      }
+#else
       D      = D>32767? 32767:D<-32768? -32768:D;
+#endif
 #if defined(BPU16)
       Buf[I] = D+32768;
 #elif defined(BPS16)

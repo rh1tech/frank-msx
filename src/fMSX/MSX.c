@@ -532,10 +532,12 @@ int StartMSX(int NewMode,int NewRAMPages,int NewVRAMPages)
 
   PRINTOK;
 
-#ifndef FRANK_MSX_NO_OPTIONAL_ROMS
-  /* Start loading system cartridges */
+  /* Start loading system cartridges. We always load FMPAC so MSX-MUSIC
+   * games hear FM; the heavier optional carts (MSXDOS2 / PAINTER /
+   * GMASTER) are skipped when FRANK_MSX_NO_OPTIONAL_ROMS is set. */
   J=MAXCARTS;
 
+#ifndef FRANK_MSX_NO_OPTIONAL_ROMS
   /* If MSX2 or better and DiskROM present...  */
   /* ...try loading MSXDOS2 cartridge into 3:0 */
   if(!MODEL(MSX_MSX1)&&OPTION(MSX_MSXDOS2)&&(MemMap[3][1][2]!=EmptyRAM)&&!ROMData[2])
@@ -548,11 +550,15 @@ int StartMSX(int NewMode,int NewRAMPages,int NewVRAMPages)
     for(;(J<MAXSLOTS)&&ROMData[J];++J);
     if((J<MAXSLOTS)&&LoadCart("PAINTER.ROM",J,0)) ++J;
   }
+#endif
 
-  /* Load FMPAC cartridge */
+  /* Load FMPAC cartridge — required for games that use MSX-MUSIC (FM)
+   * because they detect the chip via the FMPAC ROM's signature rather
+   * than via raw port 0x7C/0x7D access. */
   for(;(J<MAXSLOTS)&&ROMData[J];++J);
   if((J<MAXSLOTS)&&LoadCart("FMPAC.ROM",J,MAP_FMPAC)) ++J;
 
+#ifndef FRANK_MSX_NO_OPTIONAL_ROMS
   /* Load Konami GameMaster2/GameMaster cartridges */
   for(;(J<MAXSLOTS)&&ROMData[J];++J);
   if(J<MAXSLOTS)
@@ -560,10 +566,6 @@ int StartMSX(int NewMode,int NewRAMPages,int NewVRAMPages)
     if(LoadCart("GMASTER2.ROM",J,MAP_GMASTER2)) ++J;
     else if(LoadCart("GMASTER.ROM",J,0)) ++J;
   }
-#else
-  /* Skip MSXDOS2 / PAINTER / FMPAC / GMASTER probing. */
-  J = MAXCARTS;
-  (void)J;
 #endif
 
   /* We are now back to working directory */
@@ -883,7 +885,10 @@ int ResetMSX(int NewMode,int NewRAMPages,int NewVRAMPages)
   /* Correct RAM and VRAM sizes */
   if((NewRAMPages<(MODEL(MSX_MSX1)? 4:8))||(NewRAMPages>256))
     NewRAMPages=MODEL(MSX_MSX1)? 4:8;
-  if((NewVRAMPages<(MODEL(MSX_MSX1)? 2:8))||(NewVRAMPages>8))
+  /* Upstream fMSX caps VRAM at 8 pages (128 kB). Our port raises the
+   * ceiling to 32 pages (512 kB) so the V9938/V9958 extended-VRAM
+   * modes can be exercised — the PSRAM allocator has plenty of room. */
+  if((NewVRAMPages<(MODEL(MSX_MSX1)? 2:8))||(NewVRAMPages>32))
     NewVRAMPages=MODEL(MSX_MSX1)? 2:8;
 
   /* If changing amount of RAM... */
@@ -947,9 +952,13 @@ int ResetMSX(int NewMode,int NewRAMPages,int NewVRAMPages)
     }
 
   /* Reset sound chips */
+  /* Allocate sound-channel indices non-overlappingly. Upstream fMSX
+   * places both SCC and OPLL at AY8910_CHANNELS=6, which clobbers
+   * SCC's five channels with the first five OPLL ones. Give SCC the
+   * first five slots after AY and OPLL the nine slots after SCC. */
   Reset8910(&PSG,PSG_CLOCK,0);
   ResetSCC(&SCChip,AY8910_CHANNELS);
-  Reset2413(&OPLL,AY8910_CHANNELS);
+  Reset2413(&OPLL,AY8910_CHANNELS + SCC_CHANNELS);
   Sync8910(&PSG,AY8910_SYNC);
   SyncSCC(&SCChip,SCC_SYNC);
   Sync2413(&OPLL,YM2413_SYNC);
@@ -1471,6 +1480,27 @@ printf("(%04Xh) = %02Xh at PC=%04Xh\n",A,V,CPU.PC.W);
 
   /* SCC: enable/disable for no cart */
   if(!ROMData[I]&&(A==0x9000)) SCCOn[I]=(V==0x3F)? 1:0;
+
+#ifdef FRANK_MSX_DEBUG_SCC
+  /* Log SCC enable flips plus every write to the channel-enable
+   * register (0x8F on generic SCC, 0xAF on SCC+). Those are the
+   * ones that actually un-mute channels — if they never fire for
+   * certain bits, SCC voices stay silent even though freq/vol
+   * registers have been programmed. */
+  static byte prev_scc_on[MAXSLOTS] = {0};
+  if (I < MAXSLOTS && prev_scc_on[I] != SCCOn[I]) {
+    printf("scc: slot %d %s (write A=0x%04X V=0x%02X)\n",
+           I, SCCOn[I] ? "ON" : "off", A, V);
+    prev_scc_on[I] = SCCOn[I];
+  }
+  if (SCCOn[I] && ((A & 0xDF00) == 0x9800)) {
+    byte reg = A & 0xFF;
+    if (reg == 0x8F || reg == 0xAF) {
+      printf("scc: ch-enable write reg=0x%02X V=0x%02X (SCChip.R[0xAF]=0x%02X)\n",
+             reg, V, SCChip.R[0xAF]);
+    }
+  }
+#endif
 
   /* If writing to SCC... */
   if(SCCOn[I]&&((A&0xDF00)==0x9800))

@@ -34,7 +34,9 @@ extern "C" {
 #define DRM_MIDI        0x100  /* MIDI drum (ORable)         */
 
                                /* MIDI characteristics:      */
+#ifndef MIDI_CHANNELS
 #define MIDI_CHANNELS   16     /* Number of MIDI channels    */
+#endif
 #define MIDI_MINFREQ    9      /* Min MIDI frequency (Hz)    */
 #define MIDI_MAXFREQ    12285  /* Max MIDI frequency (Hz)    */
 #define MIDI_DIVISIONS  1000   /* Number of ticks per second */
@@ -154,7 +156,9 @@ int MIDILogging(int Switch);
 void MIDITicks(int N);
 
 #if !defined(MSDOS) & !defined(UNIX) & !defined(MAEMO) & !defined(WINDOWS) & !defined(S60) & !defined(UIQ) && !defined(ANDROID)
+#ifndef SND_CHANNELS
 #define SND_CHANNELS MIDI_CHANNELS         /* Default number */
+#endif
 #endif
 
 /** SndDriver ************************************************/

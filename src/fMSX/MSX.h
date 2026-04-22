@@ -107,7 +107,10 @@ extern "C" {
 #define MAXCHUNKS   256     /* Max number of memory blocks   */
 #define MAXCHEATS   256     /* Max number of cheats          */
 
-#define MAXCHANNELS (AY8910_CHANNELS+YM2413_CHANNELS)
+/* AY(6) + SCC(5) + OPLL(9) = 20 sound channels. The upstream fMSX
+ * header omits SCC, so the mask computed from MAXCHANNELS silently
+ * muted SCC (or OPLL, depending on chip First index). */
+#define MAXCHANNELS (AY8910_CHANNELS+SCC_CHANNELS+YM2413_CHANNELS)
   /* Number of sound channels used by the emulation */
 
 /** Model and options bits and macros ************************/

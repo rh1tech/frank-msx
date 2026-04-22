@@ -33,6 +33,8 @@
 #include "ps2kbd_wrapper.h"
 #include "nespad/nespad.h"
 
+#include "msx_ui.h"
+
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -72,10 +74,8 @@ const char *Title = "fMSX 6.0";
 /* Joystick holder updated by polling tasks */
 static volatile unsigned int g_last_joystick = 0;
 
-/* Frame pacing (60 Hz sync timer) */
-static volatile int g_sync_tick = 0;
-static alarm_id_t   g_sync_alarm_id = 0;
-static int          g_sync_hz = 0;
+/* Frame pacing (60 Hz sync timer) — see SetSyncTimer / WaitSyncTimer. */
+static int g_sync_hz = 0;
 
 /* Forward decls */
 void PutImage(void);
@@ -174,30 +174,41 @@ void SetColor(byte N, byte R, byte G, byte B) {
 }
 
 /* ==================================================================
- * 60Hz sync timer via repeating Pico alarm
+ * Sync timer — wall-clock deadline pacer.
+ *
+ * Rather than a one-shot latch (which drifts when a frame runs long),
+ * we schedule the next frame deadline as an absolute timestamp and
+ * busy-wait to it. If the emulator overruns the budget we roll the
+ * deadline forward so we don't try to "catch up" by running faster.
  * ================================================================== */
-static int64_t sync_alarm_cb(alarm_id_t id, void *ud) {
-    (void)id; (void)ud;
-    g_sync_tick = 1;
-    return (g_sync_hz > 0) ? -(1000000LL / g_sync_hz) : 0;
-}
+static uint64_t g_next_frame_us = 0;
 
 int SetSyncTimer(int Hz) {
-    if (g_sync_alarm_id) { cancel_alarm(g_sync_alarm_id); g_sync_alarm_id = 0; }
     g_sync_hz = Hz;
-    g_sync_tick = 0;
-    if (Hz <= 0) return 0;
-    g_sync_alarm_id = add_alarm_in_us(1000000 / Hz, sync_alarm_cb, NULL, true);
+    g_next_frame_us = Hz > 0 ? (time_us_64() + (uint64_t)(1000000 / Hz)) : 0;
     return 1;
 }
 
 int WaitSyncTimer(void) {
-    while (!g_sync_tick) tight_loop_contents();
-    g_sync_tick = 0;
+    if (g_sync_hz <= 0) return 0;
+    uint64_t period = (uint64_t)(1000000 / g_sync_hz);
+    uint64_t now = time_us_64();
+    if (now < g_next_frame_us) {
+        /* Ahead of schedule: spin until deadline. */
+        while (time_us_64() < g_next_frame_us) tight_loop_contents();
+        g_next_frame_us += period;
+    } else {
+        /* Behind schedule: skip waiting, but rebase the deadline so
+         * a single long frame doesn't cause "catch-up sprinting". */
+        if (now - g_next_frame_us > 2 * period)
+            g_next_frame_us = now + period;
+        else
+            g_next_frame_us += period;
+    }
     return 0;
 }
 
-int SyncTimerReady(void) { return g_sync_tick; }
+int SyncTimerReady(void) { return time_us_64() >= g_next_frame_us; }
 
 void SetEffects(unsigned int effects) { UseEffects = effects; }
 
@@ -211,6 +222,9 @@ void SetEffects(unsigned int effects) { UseEffects = effects; }
 #define AUDIO_BUF_FRAMES  (22050 / 60)   /* 367 */
 static unsigned audio_rate_hz = 0;
 
+extern unsigned audio_ring_free(void);
+#define AUDIO_RING_FRAMES_TOTAL  4096u   /* mirrors main.c AUDIO_RING_FRAMES */
+
 unsigned int InitAudio(unsigned int Rate, unsigned int Latency) {
     (void)Latency;
     audio_rate_hz = Rate ? Rate : 22050;
@@ -219,12 +233,20 @@ unsigned int InitAudio(unsigned int Rate, unsigned int Latency) {
 
 void TrashAudio(void) { audio_rate_hz = 0; }
 
-unsigned int GetFreeAudio(void)  { return AUDIO_BUF_FRAMES; }
-unsigned int GetTotalAudio(void) { return AUDIO_BUF_FRAMES; }
+unsigned int GetFreeAudio(void)  { return audio_ring_free(); }
+unsigned int GetTotalAudio(void) { return AUDIO_RING_FRAMES_TOTAL; }
+
+/* Core-0 → Core-1 audio ring defined in main.c. */
+extern unsigned audio_ring_push_mono(const int16_t *samples, unsigned count);
+extern unsigned audio_ring_free(void);
 
 unsigned int WriteAudio(sample *Data, unsigned int Length) {
-    (void)Data;
-    return Length;  /* swallow samples until I2S path is wired */
+    /* Push whatever fits; Sound.c reacts to the short write by
+     * stopping its inner loop. Pacing comes from the sync alarm in
+     * PutImage() rather than from here — sharing the pacing between
+     * both paths caused deadlocks during long silent runs. */
+    if (!Data || !Length) return 0;
+    return audio_ring_push_mono((const int16_t *)Data, Length);
 }
 
 int PauseAudio(int Switch) { (void)Switch; return 0; }
@@ -345,11 +367,49 @@ static unsigned char sc_to_msx(unsigned char sc) {
     }
 }
 
+/* Scancodes → XK_* keysyms for the UI layer. Returns 0 for keys we
+ * don't forward. */
+static unsigned int sc_to_xk(unsigned char sc) {
+    switch (sc) {
+        case PSC_Escape: return 0xFF1B;  /* Escape */
+        case PSC_Return: return 0xFF0D;  /* Return */
+        case PSC_UpA:    return 0xFF52;  /* Up */
+        case PSC_DownA:  return 0xFF54;  /* Down */
+        case PSC_LeftA:  return 0xFF51;  /* Left */
+        case PSC_RightA: return 0xFF53;  /* Right */
+        case PSC_PgUp:   return 0xFF55;
+        case PSC_PgDn:   return 0xFF56;
+        case PSC_F11:    return 0xFFC8;
+        case PSC_F12:    return 0xFFC9;
+        default:         return 0;
+    }
+}
+
 static void poll_inputs(void) {
     int pressed;
     unsigned char sc;
     ps2kbd_tick();
     while (ps2kbd_get_key(&pressed, &sc)) {
+        /* F11 toggles the loader overlay, F12 the Settings dialog. */
+        if (sc == PSC_F11) {
+            if (pressed) msx_ui_toggle();
+            continue;
+        }
+        if (sc == PSC_F12) {
+            if (pressed) msx_ui_toggle_settings();
+            continue;
+        }
+
+        /* While the overlay is visible, forward key-down events to
+         * the UI and don't touch the MSX matrix. */
+        if (msx_ui_is_visible()) {
+            if (pressed) {
+                unsigned int xk = sc_to_xk(sc);
+                if (xk) msx_ui_handle_key(xk);
+            }
+            continue;
+        }
+
         unsigned char k = sc_to_msx(sc);
         if (!k) continue;
         if (pressed) XKBD_SET(k);
@@ -359,14 +419,16 @@ static void poll_inputs(void) {
 #ifdef NESPAD_GPIO_CLK
     nespad_read();
     unsigned int j = 0;
-    if (nespad_state & 0x10) j |= BTN_UP;
-    if (nespad_state & 0x20) j |= BTN_DOWN;
-    if (nespad_state & 0x40) j |= BTN_LEFT;
-    if (nespad_state & 0x80) j |= BTN_RIGHT;
-    if (nespad_state & 0x01) j |= BTN_FIREA;
-    if (nespad_state & 0x02) j |= BTN_FIREB;
-    if (nespad_state & 0x04) j |= BTN_SELECT;
-    if (nespad_state & 0x08) j |= BTN_START;
+    /* Mask values come from drivers/nespad/nespad.h — the NES/SNES
+     * serial shift layout spreads them across bits 0..14, not 0..7. */
+    if (nespad_state & DPAD_UP)     j |= BTN_UP;
+    if (nespad_state & DPAD_DOWN)   j |= BTN_DOWN;
+    if (nespad_state & DPAD_LEFT)   j |= BTN_LEFT;
+    if (nespad_state & DPAD_RIGHT)  j |= BTN_RIGHT;
+    if (nespad_state & DPAD_A)      j |= BTN_FIREA;
+    if (nespad_state & DPAD_B)      j |= BTN_FIREB;
+    if (nespad_state & DPAD_SELECT) j |= BTN_SELECT;
+    if (nespad_state & DPAD_START)  j |= BTN_START;
     g_last_joystick = j;
 #else
     g_last_joystick = 0;
@@ -417,13 +479,32 @@ unsigned int Mouse(byte N) { (void)N; return 0; }
  * handles mixing; WriteAudio() above is a silent sink for now.
  * ================================================================== */
 void PlayAllSound(int uSec) {
-    RenderAndPlayAudio(2 * (unsigned int)uSec * (unsigned int)UseSound / 1000000u);
+    /* Request exactly `uSec` of samples at the configured rate. The
+     * Unix port used 2× to avoid underruns, but our ring already
+     * carries ~186 ms of headroom, so over-requesting just causes
+     * core 0 to spin inside RenderAndPlayAudio once the ring fills. */
+    RenderAndPlayAudio((unsigned int)uSec * (unsigned int)UseSound / 1000000u);
 }
 
 /* ==================================================================
  * PutImage() — double-buffer swap
  * ================================================================== */
 void PutImage(void) {
+    /* If the loader overlay is visible, paint it directly over the
+     * current back buffer before we present. InMenu is raised by
+     * msx_ui_show() so fMSX has already skipped its own render into
+     * this frame — the buffer still contains the previous frame's
+     * MSX image, which we overwrite. */
+    if (msx_ui_is_visible()) {
+        msx_ui_render((uint8_t *)NormScreen.Data, WIDTH, HEIGHT);
+    }
+
+    /* Pace the emulator to the configured vsync rate. The repeating
+     * Pico alarm set up in SetSyncTimer() sets g_sync_tick every
+     * 1/SyncFreq seconds; WaitSyncTimer() spins until then and
+     * consumes the latch. */
+    if (SyncFreq > 0) WaitSyncTimer();
+
     uint32_t next = current_buffer ^ 1;
 
     /* Tell the HDMI scanner to display what we just finished drawing. */
@@ -472,13 +553,23 @@ int InitMachine(void) {
     memset((void *)XKeyState, 0xFF, sizeof(XKeyState));
     memset((void *)KeyState,  0xFF, sizeof(KeyState));
 
-    /* Sound */
+    /* Sound.
+     *
+     * PlayAudio() computes `D = (Wave × MasterVolume) >> 8` and clamps
+     * to int16. At MV=128 a single full-volume channel produces
+     * ±16320 on the wire — loud without clipping. Busy multi-voice
+     * passages clip via the hard clamp (the "analog mixer" look):
+     * slightly softened peaks but every channel stays audible. */
     InitSound(UseSound, 150);
     SndSwitch = (1 << MAXCHANNELS) - 1;
-    SndVolume = 64;
+    SndVolume = 128;
     SetChannels(SndVolume, SndSwitch);
+    printf("sound: MAXCHANNELS=%d SndSwitch=0x%05X volume=%d rate=%d\n",
+           MAXCHANNELS, (unsigned)SndSwitch, SndVolume, UseSound);
 
     if (SyncFreq > 0 && !SetSyncTimer(SyncFreq * UPeriod / 100)) SyncFreq = 0;
+
+    msx_ui_init();
 
     return 1;
 }
