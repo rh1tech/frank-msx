@@ -330,11 +330,10 @@ static bool handle_slot_action_page(unsigned int xk) {
 
 /* ---- Settings page ------------------------------------------------ */
 
-/* Row layout: one per setting, then Apply, then Cancel. All rows are
- * rendered at the same left indent so Apply/Cancel look like ordinary
- * menu items rather than floating buttons. */
+/* Row layout: one row per setting, then Apply and "Back to MSX".
+ * Restart lives outside the menu on Ctrl+Alt+Del. */
 #define SETTINGS_APPLY_ROW   (MSX_SETTING_COUNT)
-#define SETTINGS_CANCEL_ROW  (MSX_SETTING_COUNT + 1)
+#define SETTINGS_BACK_ROW    (MSX_SETTING_COUNT + 1)
 #define SETTINGS_TOTAL_ROWS  (MSX_SETTING_COUNT + 2)
 
 static bool handle_settings_page(unsigned int xk) {
@@ -363,7 +362,7 @@ static bool handle_settings_page(unsigned int xk) {
             if (s_setting_row == SETTINGS_APPLY_ROW) {
                 s_state = UI_SETTINGS_CONFIRM;
                 s_dirty = true;
-            } else if (s_setting_row == SETTINGS_CANCEL_ROW) {
+            } else if (s_setting_row == SETTINGS_BACK_ROW) {
                 msx_ui_hide();
             }
             return true;
@@ -645,8 +644,8 @@ static void render_settings_page(uint8_t *fb, int stride) {
         y += UI_LINE_H + 1;
     }
 
-    /* Apply / Cancel sit at the same left indent as the setting rows
-     * above, so they read as menu items rather than dialog buttons. */
+    /* Apply and Back share the same left indent as the setting rows
+     * so they read as menu items rather than dialog buttons. */
     y += 4;
     ui_draw_menu_item(fb, stride, x, y, cw,
                       "Apply and Reset MSX",
@@ -654,9 +653,9 @@ static void render_settings_page(uint8_t *fb, int stride) {
                       s_setting_row == SETTINGS_APPLY_ROW);
     y += UI_LINE_H + 1;
     ui_draw_menu_item(fb, stride, x, y, cw,
-                      "Cancel",
+                      "Back to MSX",
                       (cw - 4) / UI_CHAR_W,
-                      s_setting_row == SETTINGS_CANCEL_ROW);
+                      s_setting_row == SETTINGS_BACK_ROW);
 
     draw_footer(fb, stride, "UP/DN  LEFT/RIGHT  ENTER  ESC");
 }

@@ -283,7 +283,7 @@ int main(void) {
         while (true) tight_loop_contents();
     }
 
-    /* Enter emulation — never returns unless ExitNow is set */
+    /* Enter emulation — runs the Z80 until ExitNow is raised. */
     StartMSX(Mode, RAMPages, VRAMPages);
 
     TrashMSX();

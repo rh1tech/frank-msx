@@ -4,17 +4,20 @@
 
 #include "msx_settings.h"
 #include "MSX.h"
+#include "HDMI.h"
 
 #include <string.h>
 #include <stdio.h>
 
 msx_settings_t g_settings = {
-    .model  = 2,   /* MSX2+ — matches main.c default */
-    .region = 0,   /* NTSC */
-    .ram    = 0,   /* 64 kB */
-    .vram   = 2,   /* 128 kB */
-    .joy1   = 1,   /* Joystick */
-    .joy2   = 1,   /* Joystick */
+    .model     = 2,                 /* MSX2+ — matches main.c default */
+    .region    = 0,                 /* NTSC */
+    .ram       = 0,                 /* 64 kB */
+    .vram      = 2,                 /* 128 kB */
+    .joy1      = 1,                 /* Joystick */
+    .joy2      = 1,                 /* Joystick */
+    .scanlines = MSX_SCAN_OFF,
+    .color     = MSX_COLOR_NORMAL,
 };
 
 /* ---- value tables ---------------------------------------------------- */
@@ -41,40 +44,65 @@ static const char *JOY_LABELS[]  = {
     "Mouse",
 };
 
+static const char *SCANLINE_LABELS[MSX_SCAN_COUNT] = {
+    "Off",
+    "On",
+};
+
+static const char *COLOR_LABELS[MSX_COLOR_COUNT] = {
+    "Normal",
+    "Monochrome",
+    "Sepia",
+    "Green",
+    "Amber",
+};
+
 int msx_settings_choices(msx_setting_id_t id) {
     switch (id) {
-        case MSX_SETTING_MODEL:  return (int)(sizeof(MODEL_LABELS) / sizeof(MODEL_LABELS[0]));
-        case MSX_SETTING_REGION: return (int)(sizeof(REGION_LABELS)/ sizeof(REGION_LABELS[0]));
-        case MSX_SETTING_RAM:    return (int)(sizeof(RAM_LABELS)   / sizeof(RAM_LABELS[0]));
-        case MSX_SETTING_VRAM:   return (int)(sizeof(VRAM_LABELS)  / sizeof(VRAM_LABELS[0]));
+        case MSX_SETTING_MODEL:     return (int)(sizeof(MODEL_LABELS) / sizeof(MODEL_LABELS[0]));
+        case MSX_SETTING_REGION:    return (int)(sizeof(REGION_LABELS)/ sizeof(REGION_LABELS[0]));
+        case MSX_SETTING_RAM:       return (int)(sizeof(RAM_LABELS)   / sizeof(RAM_LABELS[0]));
+        case MSX_SETTING_VRAM:      return (int)(sizeof(VRAM_LABELS)  / sizeof(VRAM_LABELS[0]));
         case MSX_SETTING_JOY1:
-        case MSX_SETTING_JOY2:   return (int)(sizeof(JOY_LABELS)   / sizeof(JOY_LABELS[0]));
-        default:                  return 0;
+        case MSX_SETTING_JOY2:      return (int)(sizeof(JOY_LABELS)   / sizeof(JOY_LABELS[0]));
+        case MSX_SETTING_SCANLINES: return MSX_SCAN_COUNT;
+        case MSX_SETTING_COLOR:     return MSX_COLOR_COUNT;
+        default:                    return 0;
     }
 }
 
 const char *msx_settings_label(msx_setting_id_t id) {
     switch (id) {
-        case MSX_SETTING_MODEL:  return "Model";
-        case MSX_SETTING_REGION: return "Region";
-        case MSX_SETTING_RAM:    return "Main RAM";
-        case MSX_SETTING_VRAM:   return "Video RAM";
-        case MSX_SETTING_JOY1:   return "Joystick 1";
-        case MSX_SETTING_JOY2:   return "Joystick 2";
-        default:                  return "?";
+        case MSX_SETTING_MODEL:     return "Model";
+        case MSX_SETTING_REGION:    return "Region";
+        case MSX_SETTING_RAM:       return "Main RAM";
+        case MSX_SETTING_VRAM:      return "Video RAM";
+        case MSX_SETTING_JOY1:      return "Joystick 1";
+        case MSX_SETTING_JOY2:      return "Joystick 2";
+        case MSX_SETTING_SCANLINES: return "Scanlines";
+        case MSX_SETTING_COLOR:     return "Color filter";
+        default:                    return "?";
     }
 }
 
 const char *msx_settings_value_label(msx_setting_id_t id) {
     switch (id) {
-        case MSX_SETTING_MODEL:  return MODEL_LABELS[g_settings.model];
-        case MSX_SETTING_REGION: return REGION_LABELS[g_settings.region];
-        case MSX_SETTING_RAM:    return RAM_LABELS[g_settings.ram];
-        case MSX_SETTING_VRAM:   return VRAM_LABELS[g_settings.vram];
-        case MSX_SETTING_JOY1:   return JOY_LABELS[g_settings.joy1];
-        case MSX_SETTING_JOY2:   return JOY_LABELS[g_settings.joy2];
-        default:                  return "?";
+        case MSX_SETTING_MODEL:     return MODEL_LABELS[g_settings.model];
+        case MSX_SETTING_REGION:    return REGION_LABELS[g_settings.region];
+        case MSX_SETTING_RAM:       return RAM_LABELS[g_settings.ram];
+        case MSX_SETTING_VRAM:      return VRAM_LABELS[g_settings.vram];
+        case MSX_SETTING_JOY1:      return JOY_LABELS[g_settings.joy1];
+        case MSX_SETTING_JOY2:      return JOY_LABELS[g_settings.joy2];
+        case MSX_SETTING_SCANLINES: return SCANLINE_LABELS[g_settings.scanlines];
+        case MSX_SETTING_COLOR:     return COLOR_LABELS[g_settings.color];
+        default:                    return "?";
     }
+}
+
+bool msx_settings_needs_reset(msx_setting_id_t id) {
+    /* Visual-only settings apply live; everything else rebuilds the
+     * machine. */
+    return !(id == MSX_SETTING_SCANLINES || id == MSX_SETTING_COLOR);
 }
 
 static void step_u8(uint8_t *v, int delta, int n) {
@@ -88,14 +116,27 @@ void msx_settings_step(msx_setting_id_t id, int delta) {
     int n = msx_settings_choices(id);
     if (n <= 0) return;
     switch (id) {
-        case MSX_SETTING_MODEL:  step_u8(&g_settings.model,  delta, n); break;
-        case MSX_SETTING_REGION: step_u8(&g_settings.region, delta, n); break;
-        case MSX_SETTING_RAM:    step_u8(&g_settings.ram,    delta, n); break;
-        case MSX_SETTING_VRAM:   step_u8(&g_settings.vram,   delta, n); break;
-        case MSX_SETTING_JOY1:   step_u8(&g_settings.joy1,   delta, n); break;
-        case MSX_SETTING_JOY2:   step_u8(&g_settings.joy2,   delta, n); break;
+        case MSX_SETTING_MODEL:     step_u8(&g_settings.model,     delta, n); break;
+        case MSX_SETTING_REGION:    step_u8(&g_settings.region,    delta, n); break;
+        case MSX_SETTING_RAM:       step_u8(&g_settings.ram,       delta, n); break;
+        case MSX_SETTING_VRAM:      step_u8(&g_settings.vram,      delta, n); break;
+        case MSX_SETTING_JOY1:      step_u8(&g_settings.joy1,      delta, n); break;
+        case MSX_SETTING_JOY2:      step_u8(&g_settings.joy2,      delta, n); break;
+        case MSX_SETTING_SCANLINES: step_u8(&g_settings.scanlines, delta, n);
+                                    msx_settings_apply_visual();            break;
+        case MSX_SETTING_COLOR:     step_u8(&g_settings.color,     delta, n);
+                                    msx_settings_apply_visual();            break;
         default: break;
     }
+}
+
+void msx_settings_apply_visual(void) {
+    /* Scanlines: simple on/off today — the HDMI driver has a single
+     * line-blanker effect. */
+    graphics_set_crt_active(g_settings.scanlines == MSX_SCAN_ON);
+
+    /* Colour filter -> re-tint every palette slot via platform.c. */
+    platform_repaint_palette(g_settings.color);
 }
 
 /* ---- compose + apply ------------------------------------------------- */
@@ -151,3 +192,16 @@ void msx_settings_apply_and_reset(void) {
     printf("settings: apply mode=0x%08X ram=%dp vram=%dp\n", mode, ram, vram);
     ResetMSX(mode, ram, vram);
 }
+
+void msx_settings_request_reset_current(void) {
+    printf("settings: reset (current mode=0x%08X)\n", Mode);
+    ResetMSX(Mode, RAMPages, VRAMPages);
+}
+
+/* Legacy pending-reset API — retained as no-ops so main.c still
+ * builds. We now call ResetMSX() directly. */
+bool msx_settings_reset_pending(void) { return false; }
+void msx_settings_pending_reset_values(int *m, int *r, int *v) {
+    (void)m; (void)r; (void)v;
+}
+void msx_settings_clear_pending_reset(void) { }

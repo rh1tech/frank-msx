@@ -34,6 +34,7 @@
 #include "nespad/nespad.h"
 
 #include "msx_ui.h"
+#include "msx_settings.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -138,8 +139,72 @@ pixel GetColor(unsigned char R, unsigned char G, unsigned char B) {
     return (pixel)alloc_palette_entry(R, G, B);
 }
 
+/* Raw RGB cache for every palette slot we ever programmed.
+ * Every path that writes the HDMI palette routes through pal_push(),
+ * which stores the requested color here and re-applies the active
+ * color filter before handing the value to the HDMI driver. On a
+ * filter change we just iterate this table and push fresh values. */
+#include "msx_settings.h"
+static uint8_t  s_raw_rgb[256][3];
+static uint8_t  s_pal_valid[256];        /* 1 if slot is in use */
+static uint8_t  s_color_filter = MSX_COLOR_NORMAL;
+
+static inline uint8_t clip_u8(int v) {
+    return (uint8_t)(v < 0 ? 0 : v > 255 ? 255 : v);
+}
+
+/* Apply the current filter to (R,G,B) and return the 0xRRGGBB value. */
+static uint32_t filter_rgb(uint8_t R, uint8_t G, uint8_t B) {
+    /* Luminance approximation: Y = 0.299R + 0.587G + 0.114B */
+    int Y = (R * 77 + G * 150 + B * 29) >> 8;
+    switch (s_color_filter) {
+        case MSX_COLOR_MONO:
+            R = G = B = (uint8_t)Y;
+            break;
+        case MSX_COLOR_SEPIA: {
+            /* Classic sepia matrix. */
+            int nr = (R * 100 + G * 196 + B *  48) >> 8;
+            int ng = (R *  89 + G * 174 + B *  43) >> 8;
+            int nb = (R *  69 + G * 136 + B *  33) >> 8;
+            R = clip_u8(nr); G = clip_u8(ng); B = clip_u8(nb);
+            break;
+        }
+        case MSX_COLOR_GREEN:
+            R = 0; G = (uint8_t)Y; B = 0;
+            break;
+        case MSX_COLOR_AMBER:
+            R = (uint8_t)Y;
+            G = clip_u8((Y * 3) / 4);
+            B = 0;
+            break;
+        case MSX_COLOR_NORMAL:
+        default:
+            break;
+    }
+    return ((uint32_t)R << 16) | ((uint32_t)G << 8) | B;
+}
+
+static void pal_push(uint8_t idx, uint8_t R, uint8_t G, uint8_t B) {
+    s_raw_rgb[idx][0] = R;
+    s_raw_rgb[idx][1] = G;
+    s_raw_rgb[idx][2] = B;
+    s_pal_valid[idx]  = 1;
+    graphics_set_palette(idx, filter_rgb(R, G, B));
+}
+
 void SetPalette(pixel N, unsigned char R, unsigned char G, unsigned char B) {
-    graphics_set_palette((uint8_t)N, ((uint32_t)R << 16) | ((uint32_t)G << 8) | B);
+    pal_push((uint8_t)N, R, G, B);
+}
+
+/* Iterate every slot we've ever set and re-push with the new filter.
+ * Called by msx_settings_apply_visual() when the Color setting changes. */
+void platform_repaint_palette(uint8_t color_filter) {
+    s_color_filter = color_filter;
+    for (int i = 0; i < 256; ++i) {
+        if (s_pal_valid[i])
+            graphics_set_palette((uint8_t)i,
+                filter_rgb(s_raw_rgb[i][0], s_raw_rgb[i][1], s_raw_rgb[i][2]));
+    }
 }
 
 /* fMSX's Common.h uses X11GetColor() to map an (R,G,B) triple to an
@@ -149,10 +214,9 @@ void SetPalette(pixel N, unsigned char R, unsigned char G, unsigned char B) {
 static uint8_t s_pal_cursor = 16;
 
 static unsigned int alloc_palette_entry(unsigned char R, unsigned char G, unsigned char B) {
-    uint32_t rgb = ((uint32_t)R << 16) | ((uint32_t)G << 8) | B;
     uint8_t idx = s_pal_cursor++;
     if (s_pal_cursor >= 240) s_pal_cursor = 16;  /* 250-253 reserved for HDMI sync */
-    graphics_set_palette(idx, rgb);
+    pal_push(idx, R, G, B);
     return idx;
 }
 
@@ -167,8 +231,7 @@ void SetColor(byte N, byte R, byte G, byte B) {
     /* Fixed-slot palette: entry 0..15 = MSX palette. Sync entries are
      * reserved above 250. */
     uint8_t idx = N;
-    uint32_t rgb = ((uint32_t)R << 16) | ((uint32_t)G << 8) | B;
-    graphics_set_palette(idx, rgb);
+    pal_push(idx, R, G, B);
     if (N == 0)      XPal0 = idx;
     else if (N < 80) XPal[N] = idx;
 }
@@ -385,11 +448,30 @@ static unsigned int sc_to_xk(unsigned char sc) {
     }
 }
 
+/* Track Ctrl+Alt state across poll_inputs() calls so we can recognise
+ * Ctrl+Alt+Del as a host-level "reset the MSX" chord. */
+static bool s_ctrl_down = false;
+static bool s_alt_down  = false;
+
 static void poll_inputs(void) {
     int pressed;
     unsigned char sc;
     ps2kbd_tick();
     while (ps2kbd_get_key(&pressed, &sc)) {
+        /* Track modifier keys before anything else. */
+        if (sc == PSC_LCtrl || sc == PSC_RCtrl) s_ctrl_down = pressed;
+        if (sc == PSC_LAlt  || sc == PSC_RAlt ) s_alt_down  = pressed;
+
+        /* Ctrl+Alt+Del -> MSX hard reset. */
+        if (sc == PSC_Delete && pressed && s_ctrl_down && s_alt_down) {
+            printf("host: Ctrl+Alt+Del -> ResetMSX\n");
+            ResetMSX(Mode, RAMPages, VRAMPages);
+            s_ctrl_down = s_alt_down = false;
+            memset((void *)XKeyState, 0xFF, sizeof(XKeyState));
+            memset((void *)KeyState,  0xFF, sizeof(KeyState));
+            continue;
+        }
+
         /* F11 toggles the loader overlay, F12 the Settings dialog. */
         if (sc == PSC_F11) {
             if (pressed) msx_ui_toggle();
@@ -570,6 +652,10 @@ int InitMachine(void) {
     if (SyncFreq > 0 && !SetSyncTimer(SyncFreq * UPeriod / 100)) SyncFreq = 0;
 
     msx_ui_init();
+    /* Apply default visual settings (pass-through filter, CRT off).
+     * Re-applied via msx_settings_apply_visual() whenever the user
+     * touches Scanlines or Color filter in the Settings dialog. */
+    msx_settings_apply_visual();
 
     return 1;
 }

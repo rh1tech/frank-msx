@@ -894,11 +894,16 @@ int ResetMSX(int NewMode,int NewRAMPages,int NewVRAMPages)
   /* If changing amount of RAM... */
   if(NewRAMPages!=RAMPages)
   {
+    /* Free the old buffer *before* allocating the new one — upstream
+     * fMSX frees after the alloc, which doubles peak memory during
+     * the swap. On a constrained PSRAM heap that triggers OOM when
+     * going e.g. 128 kB -> 512 kB with other state already live. */
+    FreeMemory(RAMData);
+    RAMData  = 0;
     if(Verbose) printf("Allocating %dkB for RAM...",NewRAMPages*16);
     if((P1=GetMemory(NewRAMPages*0x4000)))
     {
       memset(P1,NORAM,NewRAMPages*0x4000);
-      FreeMemory(RAMData);
       RAMPages = NewRAMPages;
       RAMMask  = NewRAMPages-1;
       RAMData  = P1;
@@ -909,11 +914,12 @@ int ResetMSX(int NewMode,int NewRAMPages,int NewVRAMPages)
   /* If changing amount of VRAM... */
   if(NewVRAMPages!=VRAMPages)
   {
+    FreeMemory(VRAM);
+    VRAM = 0;
     if(Verbose) printf("Allocating %dkB for VRAM...",NewVRAMPages*16);
     if((P1=GetMemory(NewVRAMPages*0x4000)))
     {
       memset(P1,0x00,NewVRAMPages*0x4000);
-      FreeMemory(VRAM);
       VRAMPages = NewVRAMPages;
       VRAM      = P1;
     }

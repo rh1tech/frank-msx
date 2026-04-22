@@ -4,6 +4,7 @@
  */
 
 #include "msx_loader.h"
+#include "msx_settings.h"
 #include "MSX.h"
 #include "FDIDisk.h"
 #include "ff.h"
@@ -209,15 +210,21 @@ int msx_mount_entry(int idx, msx_target_t target, bool reset_after_cart) {
         case MSX_TARGET_CART_B: {
             if (e->kind != MSX_ENTRY_ROM) return -2;
             int slot = (target == MSX_TARGET_CART_A) ? 0 : 1;
-            /* fMSX's LoadCart doesn't free the old ROMData before
-             * allocating a new one, so swapping leaks the previous
-             * cart. Eject first (LoadCart(NULL,...) frees + resets).
-             * After eject our own state is also reset, so g_cart_loaded
-             * reflects the truth either way. */
-            if (g_cart_loaded[slot]) {
-                LoadCart(NULL, slot, 0);
+
+            /* Free the old ROMData explicitly — fMSX's LoadCart
+             * allocates the new buffer BEFORE freeing the old one,
+             * so we plug that half of the leak here. The eject code
+             * inside LoadCart() does free, but also calls ResetMSX,
+             * which we want to control ourselves from the UI layer. */
+            extern byte *ROMData[];
+            extern byte ROMMask[];
+            if (g_cart_loaded[slot] && ROMData[slot]) {
+                psram_free(ROMData[slot]);
+                ROMData[slot] = NULL;
+                ROMMask[slot] = 0;
                 g_cart_loaded[slot] = false;
             }
+
             msx_entry_path(idx, g_cart_paths[slot], sizeof(g_cart_paths[slot]));
             ROMName[slot] = g_cart_paths[slot];
             printf("mount: LoadCart(\"%s\", slot=%d)\n", g_cart_paths[slot], slot);
@@ -258,7 +265,8 @@ int msx_eject(msx_target_t target) {
         case MSX_TARGET_CART_B: {
             int slot = (target == MSX_TARGET_CART_A) ? 0 : 1;
             if (!g_cart_loaded[slot]) return -1;
-            /* LoadCart(NULL, slot, ...) ejects + calls ResetMSX inside. */
+            /* LoadCart(NULL, slot, 0) frees the old ROMData and then
+             * calls ResetMSX(). That's the leak-free path. */
             LoadCart(NULL, slot, 0);
             g_cart_loaded[slot] = false;
             g_cart_paths[slot][0] = 0;
@@ -268,7 +276,8 @@ int msx_eject(msx_target_t target) {
         case MSX_TARGET_DISK_B: {
             int drv = (target == MSX_TARGET_DISK_A) ? 0 : 1;
             if (!g_disk_loaded[drv]) return -1;
-            /* ChangeDisk(drv, NULL) ejects the floppy. No reset needed. */
+            /* ChangeDisk(drv, NULL) frees the FDIDisk buffer via
+             * EjectFDI. No ResetMSX; disk swap is hot. */
             ChangeDisk((byte)drv, NULL);
             g_disk_loaded[drv] = false;
             g_disk_paths[drv][0] = 0;
