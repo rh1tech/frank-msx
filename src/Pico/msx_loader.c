@@ -5,6 +5,7 @@
 
 #include "msx_loader.h"
 #include "MSX.h"
+#include "FDIDisk.h"
 #include "ff.h"
 #include "psram_allocator.h"
 
@@ -175,6 +176,30 @@ void msx_entry_path(int idx, char *buf, size_t buf_sz) {
 static char g_cart_paths[2][MSX_MAX_PATH_LEN + MSX_MAX_FILENAME_LEN + 2];
 static char g_disk_paths[2][MSX_MAX_PATH_LEN + MSX_MAX_FILENAME_LEN + 2];
 
+/* Mount state tracked by the UI so it can display "currently loaded"
+ * and decide whether to show Eject / Save menu entries. Updated by
+ * msx_mount_entry() / msx_eject() / msx_create_blank_disk(). */
+static bool g_cart_loaded[2] = { false, false };
+static bool g_disk_loaded[2] = { false, false };
+
+static void strip_to_basename(const char *full, char *out, size_t out_sz) {
+    const char *slash = strrchr(full, '/');
+    const char *name  = slash ? slash + 1 : full;
+    size_t n = strnlen(name, out_sz - 1);
+    memcpy(out, name, n);
+    out[n] = 0;
+}
+
+const char *msx_mounted_name(msx_target_t target) {
+    switch (target) {
+        case MSX_TARGET_CART_A: return g_cart_loaded[0] ? g_cart_paths[0] : NULL;
+        case MSX_TARGET_CART_B: return g_cart_loaded[1] ? g_cart_paths[1] : NULL;
+        case MSX_TARGET_DISK_A: return g_disk_loaded[0] ? g_disk_paths[0] : NULL;
+        case MSX_TARGET_DISK_B: return g_disk_loaded[1] ? g_disk_paths[1] : NULL;
+        default:                 return NULL;
+    }
+}
+
 int msx_mount_entry(int idx, msx_target_t target, bool reset_after_cart) {
     if (idx < 0 || idx >= msx_entry_count) return -1;
     msx_entry_t *e = &msx_entries[idx];
@@ -184,29 +209,26 @@ int msx_mount_entry(int idx, msx_target_t target, bool reset_after_cart) {
         case MSX_TARGET_CART_B: {
             if (e->kind != MSX_ENTRY_ROM) return -2;
             int slot = (target == MSX_TARGET_CART_A) ? 0 : 1;
+            /* fMSX's LoadCart doesn't free the old ROMData before
+             * allocating a new one, so swapping leaks the previous
+             * cart. Eject first (LoadCart(NULL,...) frees + resets).
+             * After eject our own state is also reset, so g_cart_loaded
+             * reflects the truth either way. */
+            if (g_cart_loaded[slot]) {
+                LoadCart(NULL, slot, 0);
+                g_cart_loaded[slot] = false;
+            }
             msx_entry_path(idx, g_cart_paths[slot], sizeof(g_cart_paths[slot]));
             ROMName[slot] = g_cart_paths[slot];
             printf("mount: LoadCart(\"%s\", slot=%d)\n", g_cart_paths[slot], slot);
 
-            /* Quick path sanity: open via FatFS directly so we can tell
-             * whether fMSX's fopen path is wrong or the cart itself is
-             * the problem. */
-            {
-                FIL probe;
-                FRESULT pr = f_open(&probe, g_cart_paths[slot], FA_READ);
-                if (pr != FR_OK) {
-                    printf("  f_open failed: %d\n", pr);
-                    return -4;
-                }
-                printf("  file size: %lu\n", (unsigned long)f_size(&probe));
-                f_close(&probe);
-            }
-
             int pages = LoadCart(g_cart_paths[slot], slot, MAP_GUESS);
             if (!pages) {
                 printf("  LoadCart returned 0 (fMSX rejected the ROM)\n");
+                g_cart_loaded[slot] = false;
                 return -3;
             }
+            g_cart_loaded[slot] = true;
             printf("  mounted %d 8k-pages\n", pages);
             if (reset_after_cart) ResetMSX(Mode, RAMPages, VRAMPages);
             return 0;
@@ -215,12 +237,94 @@ int msx_mount_entry(int idx, msx_target_t target, bool reset_after_cart) {
         case MSX_TARGET_DISK_B: {
             if (e->kind != MSX_ENTRY_DISK) return -2;
             int drv = (target == MSX_TARGET_DISK_A) ? 0 : 1;
+            /* Disks auto-eject inside ChangeDisk() when a drive is
+             * already loaded (EjectFDI is called before re-Load). The
+             * old FDIDisk buffer passes back through psram_free via
+             * our FRANK_MSX_PSRAM hook. */
             msx_entry_path(idx, g_disk_paths[drv], sizeof(g_disk_paths[drv]));
             DSKName[drv] = g_disk_paths[drv];
             if (!ChangeDisk((byte)drv, g_disk_paths[drv])) return -3;
+            g_disk_loaded[drv] = true;
             return 0;
         }
         default:
             return -1;
     }
+}
+
+int msx_eject(msx_target_t target) {
+    switch (target) {
+        case MSX_TARGET_CART_A:
+        case MSX_TARGET_CART_B: {
+            int slot = (target == MSX_TARGET_CART_A) ? 0 : 1;
+            if (!g_cart_loaded[slot]) return -1;
+            /* LoadCart(NULL, slot, ...) ejects + calls ResetMSX inside. */
+            LoadCart(NULL, slot, 0);
+            g_cart_loaded[slot] = false;
+            g_cart_paths[slot][0] = 0;
+            return 0;
+        }
+        case MSX_TARGET_DISK_A:
+        case MSX_TARGET_DISK_B: {
+            int drv = (target == MSX_TARGET_DISK_A) ? 0 : 1;
+            if (!g_disk_loaded[drv]) return -1;
+            /* ChangeDisk(drv, NULL) ejects the floppy. No reset needed. */
+            ChangeDisk((byte)drv, NULL);
+            g_disk_loaded[drv] = false;
+            g_disk_paths[drv][0] = 0;
+            return 0;
+        }
+        default:
+            return -1;
+    }
+}
+
+static int next_sequence_id(const char *prefix, const char *ext) {
+    /* Pick a filename /MSX/<prefix><NN>.<ext> that doesn't exist yet. */
+    FILINFO fno;
+    char trial[MSX_MAX_PATH_LEN];
+    for (int i = 1; i < 1000; ++i) {
+        snprintf(trial, sizeof(trial), "/MSX/%s%03d.%s", prefix, i, ext);
+        if (f_stat(trial, &fno) != FR_OK) return i;
+    }
+    return 0;
+}
+
+int msx_create_blank_disk(msx_target_t target) {
+    if (target != MSX_TARGET_DISK_A && target != MSX_TARGET_DISK_B) return -1;
+    int drv = (target == MSX_TARGET_DISK_A) ? 0 : 1;
+
+    int seq = next_sequence_id("NEW", "DSK");
+    if (seq == 0) return -2;
+
+    snprintf(g_disk_paths[drv], sizeof(g_disk_paths[drv]),
+             "/MSX/NEW%03d.DSK", seq);
+    printf("disk: creating blank image at %s\n", g_disk_paths[drv]);
+
+    /* fMSX's ChangeDisk() with an empty string ("") creates a new
+     * 720 kB MSX-formatted disk image in memory. We follow up with
+     * SaveFDI(FMT_MSXDSK) so the empty image lives on the SD card. */
+    DSKName[drv] = g_disk_paths[drv];
+    if (!ChangeDisk((byte)drv, "")) return -3;
+    if (!SaveFDI(&FDD[drv], g_disk_paths[drv], FMT_MSXDSK)) return -4;
+    g_disk_loaded[drv] = true;
+    return 0;
+}
+
+int msx_save_disk(msx_target_t target, int fmt) {
+    if (target != MSX_TARGET_DISK_A && target != MSX_TARGET_DISK_B) return -1;
+    int drv = (target == MSX_TARGET_DISK_A) ? 0 : 1;
+    if (!g_disk_loaded[drv]) return -2;
+
+    const char *ext = (fmt == FMT_FDI) ? "FDI" : "DSK";
+    int seq = next_sequence_id("SAVE", ext);
+    if (seq == 0) return -3;
+
+    char dest[MSX_MAX_PATH_LEN];
+    snprintf(dest, sizeof(dest), "/MSX/SAVE%03d.%s", seq, ext);
+    printf("disk: saving drive %c to %s (fmt=%d)\n", 'A' + drv, dest, fmt);
+
+    int r = SaveFDI(&FDD[drv], dest, fmt);
+    /* SaveFDI result: 0 failed, 1 truncated, 2 padded, 3 ok. */
+    return (r >= FDI_SAVE_TRUNCATED) ? 0 : -4;
 }

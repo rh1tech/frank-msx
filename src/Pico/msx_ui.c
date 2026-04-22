@@ -7,6 +7,7 @@
 #include "msx_settings.h"
 #include "ui_draw.h"
 #include "board_config.h"
+#include "HDMI.h"
 
 #include "MSX.h"
 #include "EMULib.h"
@@ -46,23 +47,28 @@ static const char *TARGET_LABELS[MSX_TARGET_COUNT] = {
 
 typedef enum {
     UI_HIDDEN = 0,
-    UI_SELECT_TARGET,
-    UI_SELECT_FILE,
-    UI_SELECT_ACTION,
-    UI_SETTINGS,             /* edit settings, last row is Apply */
-    UI_SETTINGS_CONFIRM,     /* "reset required — continue?" dialog */
+    UI_SELECT_TARGET,        /* pick Cart A/B, Disk A/B */
+    UI_SLOT_ACTION,          /* context menu for the chosen slot/drive */
+    UI_SELECT_FILE,          /* browse SD to pick a ROM/DSK to mount  */
+    UI_SETTINGS,
+    UI_SETTINGS_CONFIRM,
     UI_BUSY,
     UI_MESSAGE,
 } ui_state_t;
 
 static volatile ui_state_t s_state = UI_HIDDEN;
-static int  s_target   = 0;   /* index into TARGET_LABELS */
-static int  s_file     = 0;   /* highlight in file list */
-static int  s_scroll   = 0;
-static int  s_action   = 0;   /* 0 Mount / 1 Mount+Reset / 2 Cancel */
-static int  s_setting_row = 0; /* 0..MSX_SETTING_COUNT = Apply row   */
-static bool s_dirty    = true;
+static int  s_target      = 0;
+static int  s_file        = 0;
+static int  s_scroll      = 0;
+static int  s_slot_action = 0;   /* row in UI_SLOT_ACTION */
+static int  s_setting_row = 0;
+static bool s_dirty       = true;
 static char s_msg[96];
+
+/* Which "mount" behaviour to apply when a file is picked. Cartridge
+ * slots force a reset; floppy drives don't. Set when entering
+ * UI_SELECT_FILE from UI_SLOT_ACTION. */
+static bool s_mount_reset_after = false;
 
 extern int InMenu;             /* fMSX flag — silences input */
 
@@ -111,6 +117,34 @@ void msx_ui_toggle_settings(void) {
     else                      msx_ui_hide();
 }
 
+extern uint8_t *SCREEN[2];
+extern volatile uint32_t current_buffer;
+
+/* Synchronously paint a "Working..." dialog with a custom message
+ * into the HDMI front buffer and return. Used to bracket long SD /
+ * dlmalloc operations so the user sees activity instead of a stuck
+ * frame. */
+void msx_ui_show_busy(const char *message) {
+    uint8_t *fb = SCREEN[current_buffer];
+    int x = WIN_X + WIN_PAD;
+    int cw = WIN_W - 2 * WIN_PAD;
+
+    ui_fill_rect  (fb, MSX_FB_WIDTH, WIN_X, WIN_Y, WIN_W, WIN_H, UI_COLOR_BG);
+    ui_draw_border(fb, MSX_FB_WIDTH, WIN_X, WIN_Y, WIN_W, WIN_H, UI_COLOR_FG);
+    ui_draw_header(fb, MSX_FB_WIDTH, WIN_X, WIN_Y, WIN_W, " Working... ");
+
+    int max_chars = (cw - 4) / UI_CHAR_W;
+    ui_draw_string_truncated(fb, MSX_FB_WIDTH, x,
+                             WIN_Y + WIN_H / 2 - UI_CHAR_H / 2,
+                             message ? message : "Please wait...",
+                             max_chars, UI_COLOR_FG);
+
+    /* Point the HDMI scanner at the buffer we just drew. The scanner
+     * reads SCREEN[!current_buffer], so swap first. */
+    graphics_set_buffer(fb);
+    current_buffer ^= 1;
+}
+
 /* ---- helpers ---------------------------------------------------- */
 
 static void clamp_file_scroll(void) {
@@ -154,11 +188,142 @@ static bool handle_target_page(unsigned int xk) {
             if (++s_target >= MSX_TARGET_COUNT) s_target = 0;
             s_dirty = true; return true;
         case XK_Return:
-            s_state = UI_SELECT_FILE;
-            s_file = 0; s_scroll = 0;
-            s_dirty = true; return true;
+            s_state        = UI_SLOT_ACTION;
+            s_slot_action  = 0;
+            s_dirty        = true;
+            return true;
         case XK_Escape:
             msx_ui_hide(); return true;
+    }
+    return false;
+}
+
+/* ---- Slot-action page — context menu for the chosen slot/drive ---- */
+
+/* Dynamic action list. The rows depend on slot type (cart vs disk)
+ * and whether something is currently mounted. We build a tiny
+ * per-action descriptor so the handler and renderer agree. */
+typedef enum {
+    SLOT_ACT_INSERT = 0,      /* cart: insert + reset, disk: insert    */
+    SLOT_ACT_CHANGE,          /* same as INSERT but shown as "Change"   */
+    SLOT_ACT_EJECT,
+    SLOT_ACT_CREATE_BLANK,    /* disk only */
+    SLOT_ACT_SAVE_DSK,        /* disk only */
+    SLOT_ACT_SAVE_FDI,        /* disk only */
+    SLOT_ACT_CANCEL,
+} slot_act_kind_t;
+
+typedef struct {
+    slot_act_kind_t kind;
+    const char     *label;
+} slot_act_row_t;
+
+#define MAX_SLOT_ACTS 7
+
+static int build_slot_actions(slot_act_row_t out[MAX_SLOT_ACTS]) {
+    msx_target_t t = (msx_target_t)s_target;
+    bool is_disk   = (t == MSX_TARGET_DISK_A || t == MSX_TARGET_DISK_B);
+    bool loaded    = msx_mounted_name(t) != NULL;
+    int n = 0;
+
+    if (loaded) {
+        out[n++] = (slot_act_row_t){ SLOT_ACT_CHANGE, is_disk ? "Change disk" : "Change cartridge" };
+        out[n++] = (slot_act_row_t){ SLOT_ACT_EJECT,  "Eject" };
+        if (is_disk) {
+            out[n++] = (slot_act_row_t){ SLOT_ACT_SAVE_DSK, "Save as .DSK" };
+            out[n++] = (slot_act_row_t){ SLOT_ACT_SAVE_FDI, "Save as .FDI" };
+        }
+    } else {
+        out[n++] = (slot_act_row_t){ SLOT_ACT_INSERT, is_disk ? "Insert disk" : "Insert cartridge" };
+        if (is_disk)
+            out[n++] = (slot_act_row_t){ SLOT_ACT_CREATE_BLANK, "Create new blank disk" };
+    }
+    out[n++] = (slot_act_row_t){ SLOT_ACT_CANCEL, "Cancel" };
+    return n;
+}
+
+/* If `success_msg` is non-NULL we stay on the UI and pop a Notice;
+ * otherwise we hide the overlay (nothing more to tell the user). */
+static void report_status(int rc, const char *fail_prefix,
+                          const char *success_msg) {
+    if (rc == 0) {
+        if (success_msg) {
+            snprintf(s_msg, sizeof(s_msg), "%s", success_msg);
+            s_state = UI_MESSAGE;
+            s_dirty = true;
+        } else {
+            msx_ui_hide();
+        }
+    } else {
+        snprintf(s_msg, sizeof(s_msg), "%s (code %d)",
+                 fail_prefix ? fail_prefix : "Failed", rc);
+        s_state = UI_MESSAGE;
+        s_dirty = true;
+    }
+}
+
+static void perform_slot_action(slot_act_kind_t k) {
+    msx_target_t t  = (msx_target_t)s_target;
+    bool is_cart    = (t == MSX_TARGET_CART_A || t == MSX_TARGET_CART_B);
+
+    switch (k) {
+        case SLOT_ACT_INSERT:
+        case SLOT_ACT_CHANGE:
+            /* Hand off to the file picker. Cartridge always resets
+             * after mount; disk does not. */
+            s_mount_reset_after = is_cart;
+            s_state  = UI_SELECT_FILE;
+            s_file   = 0;
+            s_scroll = 0;
+            s_dirty  = true;
+            return;
+        case SLOT_ACT_EJECT:
+            msx_ui_show_busy("Ejecting...");
+            report_status(msx_eject(t), "Eject failed", NULL);
+            return;
+        case SLOT_ACT_CREATE_BLANK:
+            msx_ui_show_busy("Creating blank disk image...");
+            report_status(msx_create_blank_disk(t), "Create failed",
+                          "Blank disk created and mounted.");
+            return;
+        case SLOT_ACT_SAVE_DSK:
+            msx_ui_show_busy("Saving disk as .DSK...");
+            report_status(msx_save_disk(t, 7  /* FMT_MSXDSK */),
+                          "Save failed",
+                          "Saved as .DSK under /MSX/.");
+            return;
+        case SLOT_ACT_SAVE_FDI:
+            msx_ui_show_busy("Saving disk as .FDI...");
+            report_status(msx_save_disk(t, 4  /* FMT_FDI */),
+                          "Save failed",
+                          "Saved as .FDI under /MSX/.");
+            return;
+        case SLOT_ACT_CANCEL:
+            s_state = UI_SELECT_TARGET;
+            s_dirty = true;
+            return;
+    }
+}
+
+static bool handle_slot_action_page(unsigned int xk) {
+    slot_act_row_t rows[MAX_SLOT_ACTS];
+    int n = build_slot_actions(rows);
+
+    switch (xk) {
+        case XK_Up:
+            if (s_slot_action > 0) --s_slot_action;
+            else s_slot_action = n - 1;
+            s_dirty = true; return true;
+        case XK_Down:
+            if (++s_slot_action >= n) s_slot_action = 0;
+            s_dirty = true; return true;
+        case XK_Escape:
+            s_state = UI_SELECT_TARGET;
+            s_dirty = true; return true;
+        case XK_Return:
+            if (s_slot_action >= 0 && s_slot_action < n)
+                perform_slot_action(rows[s_slot_action].kind);
+            return true;
     }
     return false;
 }
@@ -243,7 +408,8 @@ static bool handle_file_page(unsigned int xk) {
             s_file += MAX_ROWS / 2;
             clamp_file_scroll(); s_dirty = true; return true;
         case XK_Escape:
-            s_state = UI_SELECT_TARGET;
+            /* Back to the slot's action menu, not all the way to target. */
+            s_state = UI_SLOT_ACTION;
             s_dirty = true; return true;
         case XK_Return: {
             if (total == 0) return true;
@@ -261,51 +427,30 @@ static bool handle_file_page(unsigned int xk) {
                 s_dirty = true; return true;
             }
             if (!target_accepts((msx_target_t)s_target, msx_entries[e].kind)) {
-                snprintf(s_msg, sizeof(s_msg), "Wrong file type for %s", TARGET_LABELS[s_target]);
+                snprintf(s_msg, sizeof(s_msg), "Wrong file type for %s",
+                         TARGET_LABELS[s_target]);
                 s_state = UI_MESSAGE;
                 s_dirty = true; return true;
             }
-            s_state  = UI_SELECT_ACTION;
-            s_action = 0;
-            s_dirty  = true;
+
+            /* Mount immediately. Cartridge = reset after, disk =
+             * live swap. The slot-action page set s_mount_reset_after
+             * when it picked "Insert cartridge" / "Insert disk". */
+            s_state = UI_BUSY;
+            s_dirty = true;
+            msx_ui_show_busy(s_target < 2 ? "Loading cartridge..."
+                                          : "Loading disk image...");
+            int rc = msx_mount_entry(e, (msx_target_t)s_target,
+                                     s_mount_reset_after);
+            if (rc == 0) {
+                msx_ui_hide();
+            } else {
+                snprintf(s_msg, sizeof(s_msg), "Mount failed (code %d)", rc);
+                s_state = UI_MESSAGE;
+                s_dirty = true;
+            }
             return true;
         }
-    }
-    return false;
-}
-
-static void perform_mount(bool reset_after) {
-    bool has_parent = strcmp(msx_current_dir, "/") != 0;
-    int e = s_file - (has_parent ? 1 : 0);
-    s_state = UI_BUSY;
-    s_dirty = true;
-
-    int rc = msx_mount_entry(e, (msx_target_t)s_target, reset_after);
-    if (rc == 0) {
-        msx_ui_hide();
-    } else {
-        snprintf(s_msg, sizeof(s_msg), "Mount failed (code %d)", rc);
-        s_state = UI_MESSAGE;
-        s_dirty = true;
-    }
-}
-
-static bool handle_action_page(unsigned int xk) {
-    switch (xk) {
-        case XK_Up:
-            if (s_action > 0) --s_action; else s_action = 2;
-            s_dirty = true; return true;
-        case XK_Down:
-            if (++s_action > 2) s_action = 0;
-            s_dirty = true; return true;
-        case XK_Escape:
-            s_state = UI_SELECT_FILE;
-            s_dirty = true; return true;
-        case XK_Return:
-            if (s_action == 0)       perform_mount(false);
-            else if (s_action == 1)  perform_mount(true);
-            else                      { s_state = UI_SELECT_FILE; s_dirty = true; }
-            return true;
     }
     return false;
 }
@@ -315,17 +460,17 @@ bool msx_ui_handle_key(unsigned int xk) {
     if (s_state == UI_HIDDEN) return false;
     if (s_state == UI_MESSAGE) {
         if (xk == XK_Return || xk == XK_Escape) {
-            s_state = UI_SELECT_FILE;
+            s_state = UI_SLOT_ACTION;
             s_dirty = true;
         }
         return true;
     }
     if (s_state == UI_BUSY) return true;
-    if (s_state == UI_SELECT_TARGET)      return handle_target_page(xk);
-    if (s_state == UI_SELECT_FILE)        return handle_file_page(xk);
-    if (s_state == UI_SELECT_ACTION)      return handle_action_page(xk);
-    if (s_state == UI_SETTINGS)           return handle_settings_page(xk);
-    if (s_state == UI_SETTINGS_CONFIRM)   return handle_settings_confirm(xk);
+    if (s_state == UI_SELECT_TARGET)    return handle_target_page(xk);
+    if (s_state == UI_SLOT_ACTION)      return handle_slot_action_page(xk);
+    if (s_state == UI_SELECT_FILE)      return handle_file_page(xk);
+    if (s_state == UI_SETTINGS)         return handle_settings_page(xk);
+    if (s_state == UI_SETTINGS_CONFIRM) return handle_settings_confirm(xk);
     return false;
 }
 
@@ -349,11 +494,40 @@ static void draw_footer(uint8_t *fb, int stride, const char *hint) {
 
 static void render_target_page(uint8_t *fb, int stride) {
     draw_chrome(fb, stride, " frank-msx Loader ");
-    int y = content_y() + 6;
-    int max_chars = (content_w() - 4) / UI_CHAR_W;
+    int y  = content_y() + 6;
+    int x  = content_x();
+    int cw = content_w();
+    int max_chars = (cw - 4) / UI_CHAR_W;
+
     for (int i = 0; i < MSX_TARGET_COUNT; ++i) {
-        ui_draw_menu_item(fb, stride, content_x(), y, content_w(),
-                          TARGET_LABELS[i], max_chars, i == s_target);
+        bool sel = (i == s_target);
+        uint8_t bg = sel ? UI_COLOR_ACCENT    : UI_COLOR_BG;
+        uint8_t fg = sel ? UI_COLOR_ACCENT_FG : UI_COLOR_FG;
+
+        /* Background + label on the left. */
+        ui_fill_rect(fb, stride, x, y, cw, UI_LINE_H, bg);
+        ui_draw_string(fb, stride, x + 2, y + 1, TARGET_LABELS[i], fg);
+
+        /* Currently mounted filename (if any) right-aligned in the row. */
+        const char *mounted = msx_mounted_name((msx_target_t)i);
+        const char *display = NULL;
+        char buf[MSX_MAX_FILENAME_LEN + 2];
+        if (mounted) {
+            const char *slash = strrchr(mounted, '/');
+            display = slash ? slash + 1 : mounted;
+        } else {
+            display = "(empty)";
+        }
+        int avail = cw - 2 - (int)strlen(TARGET_LABELS[i]) * UI_CHAR_W - 8;
+        int max_right = avail > 0 ? avail / UI_CHAR_W : 0;
+        int dlen = (int)strlen(display);
+        if (max_right < 3) max_right = 3;
+        int shown = (dlen <= max_right) ? dlen : max_right;
+        int dx = x + cw - 4 - shown * UI_CHAR_W;
+        /* Re-use the truncator so long names still make sense. */
+        ui_draw_string_truncated(fb, stride, dx, y + 1, display, max_right, fg);
+        (void)buf;
+
         y += UI_LINE_H + 2;
     }
     draw_footer(fb, stride, "UP/DN  ENTER select  ESC exit");
@@ -407,35 +581,40 @@ static void render_file_page(uint8_t *fb, int stride) {
     draw_footer(fb, stride, "UP/DN PGUP/PGDN  ENTER  ESC back");
 }
 
-static void render_action_page(uint8_t *fb, int stride) {
+static void render_slot_action_page(uint8_t *fb, int stride) {
     char title[48];
     snprintf(title, sizeof(title), " %s ", TARGET_LABELS[s_target]);
     draw_chrome(fb, stride, title);
 
     int x = content_x(), y = content_y();
-    int max_chars = (content_w() - 20) / UI_CHAR_W;
-    int max_chars_narrow = (content_w() - 4) / UI_CHAR_W;
+    int cw = content_w();
+    int max_chars = (cw - 4) / UI_CHAR_W;
 
-    bool has_parent = strcmp(msx_current_dir, "/") != 0;
-    int ei = s_file - (has_parent ? 1 : 0);
-    char line[MSX_MAX_FILENAME_LEN + 16];
-    snprintf(line, sizeof(line), "File: %s", msx_entries[ei].name);
-    ui_draw_string_truncated(fb, stride, x, y, line, max_chars_narrow, UI_COLOR_FG);
+    /* Show the currently mounted filename, or "(empty)". */
+    const char *mounted = msx_mounted_name((msx_target_t)s_target);
+    char line[MSX_MAX_FILENAME_LEN + 32];
+    if (mounted) {
+        const char *slash = strrchr(mounted, '/');
+        snprintf(line, sizeof(line), "Loaded: %s", slash ? slash + 1 : mounted);
+    } else {
+        snprintf(line, sizeof(line), "Loaded: (empty)");
+    }
+    ui_draw_string_truncated(fb, stride, x, y, line, max_chars, UI_COLOR_FG);
     y += UI_LINE_H + 4;
 
-    ui_draw_string(fb, stride, x, y, "Select action:", UI_COLOR_FG);
-    y += UI_LINE_H + 4;
+    /* Build and render the dynamic action list. */
+    slot_act_row_t rows[MAX_SLOT_ACTS];
+    int n = build_slot_actions(rows);
+    if (s_slot_action >= n) s_slot_action = n - 1;
+    if (s_slot_action < 0)  s_slot_action = 0;
 
-    ui_draw_menu_item(fb, stride, x + 10, y, content_w() - 20,
-                      "Mount",              max_chars, s_action == 0);
-    y += UI_LINE_H + 2;
-    ui_draw_menu_item(fb, stride, x + 10, y, content_w() - 20,
-                      "Mount and reset",    max_chars, s_action == 1);
-    y += UI_LINE_H + 2;
-    ui_draw_menu_item(fb, stride, x + 10, y, content_w() - 20,
-                      "Cancel",             max_chars, s_action == 2);
+    for (int i = 0; i < n; ++i) {
+        ui_draw_menu_item(fb, stride, x, y, cw,
+                          rows[i].label, max_chars, i == s_slot_action);
+        y += UI_LINE_H + 1;
+    }
 
-    draw_footer(fb, stride, "UP/DN  ENTER confirm  ESC back");
+    draw_footer(fb, stride, "UP/DN  ENTER  ESC back");
 }
 
 static void render_settings_page(uint8_t *fb, int stride) {
@@ -511,13 +690,13 @@ void msx_ui_render(uint8_t *fb, int stride, int height) {
     /* Always redraw when the UI is visible so that any MSX-side pixels
      * that might have leaked into the back buffer are overwritten. */
     switch (s_state) {
-        case UI_SELECT_TARGET:    render_target_page(fb, stride);     break;
-        case UI_SELECT_FILE:      render_file_page(fb, stride);       break;
-        case UI_SELECT_ACTION:    render_action_page(fb, stride);     break;
-        case UI_SETTINGS:         render_settings_page(fb, stride);   break;
+        case UI_SELECT_TARGET:    render_target_page(fb, stride);      break;
+        case UI_SLOT_ACTION:      render_slot_action_page(fb, stride); break;
+        case UI_SELECT_FILE:      render_file_page(fb, stride);        break;
+        case UI_SETTINGS:         render_settings_page(fb, stride);    break;
         case UI_SETTINGS_CONFIRM: render_settings_confirm(fb, stride); break;
         case UI_BUSY:             draw_chrome(fb, stride, " Working... "); break;
-        case UI_MESSAGE:          render_message_page(fb, stride);    break;
+        case UI_MESSAGE:          render_message_page(fb, stride);     break;
         default: break;
     }
     s_dirty = false;

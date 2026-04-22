@@ -64,4 +64,23 @@ void msx_entry_path(int idx, char *buf, size_t buf_sz);
  * picks it up without a reset. Returns 0 on success. */
 int msx_mount_entry(int idx, msx_target_t target, bool reset_after_cart);
 
+/* Eject whatever is currently mounted into `target`. Cartridge ejects
+ * also trigger a ResetMSX so the BIOS notices. Returns 0 on success. */
+int msx_eject(msx_target_t target);
+
+/* Current mount state (for the UI). Returns a filename (without path)
+ * for display, or NULL if the slot/drive is empty. */
+const char *msx_mounted_name(msx_target_t target);
+
+/* Create a new blank 720 kB MSX-format disk image at
+ * `/MSX/NEW_<counter>.DSK` and insert it into the given drive. */
+int msx_create_blank_disk(msx_target_t target);
+
+/* Save the current contents of a disk drive to a file under /MSX/.
+ * `fmt` must be FMT_MSXDSK (raw .DSK) or FMT_FDI.
+ * If the drive currently holds a named image, the new file is named
+ * after it with the appropriate extension; otherwise an auto-name
+ * `SAVE_<counter>.{dsk,fdi}` is used. */
+int msx_save_disk(msx_target_t target, int fmt);
+
 #endif /* MSX_LOADER_H */

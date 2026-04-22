@@ -43,4 +43,9 @@ bool msx_ui_handle_key(unsigned int xk);
  * PutImage()'s back-half whenever the UI is visible. */
 void msx_ui_render(uint8_t *back_buffer, int stride, int height);
 
+/* Synchronously paint a "Working..." dialog and present it to HDMI,
+ * so the user sees progress during long SD / dlmalloc operations
+ * (LoadCart of 4 MB MegaROMs, SaveFDI of a 720 kB floppy, ...). */
+void msx_ui_show_busy(const char *message);
+
 #endif /* MSX_UI_H */
