@@ -25,6 +25,7 @@
 #include "ff.h"
 #include "nespad/nespad.h"
 #include "ps2kbd_wrapper.h"
+#include "usbhid_wrapper.h"
 
 #include "MSX.h"
 #include "EMULib.h"
@@ -237,6 +238,12 @@ int main(void) {
                NESPAD_GPIO_CLK, NESPAD_GPIO_DATA, NESPAD_GPIO_LATCH);
     }
 #endif
+
+    /* USB HID host (keyboard/mouse/gamepad). Stubs out to nothing when
+     * USB_HID_ENABLED is off — the native USB port is then owned by
+     * pico_stdio_usb for CDC printf instead. */
+    printf("Initializing USB HID host...\n");
+    usbhid_wrapper_init();
 
     /* 8. Launch audio core */
     printf("Starting render core (audio)...\n");

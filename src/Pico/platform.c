@@ -31,6 +31,7 @@
 #include "audio.h"
 
 #include "ps2kbd_wrapper.h"
+#include "usbhid_wrapper.h"
 #include "nespad/nespad.h"
 
 #include "msx_ui.h"
@@ -453,54 +454,67 @@ static unsigned int sc_to_xk(unsigned char sc) {
 static bool s_ctrl_down = false;
 static bool s_alt_down  = false;
 
+/* Dispatch a single scancode event (press/release) through the same
+ * path regardless of whether it came from PS/2 or USB HID. */
+static void handle_key_event(int pressed, unsigned char sc) {
+    /* Track modifier keys before anything else. */
+    if (sc == PSC_LCtrl || sc == PSC_RCtrl) s_ctrl_down = pressed;
+    if (sc == PSC_LAlt  || sc == PSC_RAlt ) s_alt_down  = pressed;
+
+    /* Ctrl+Alt+Del -> MSX hard reset. */
+    if (sc == PSC_Delete && pressed && s_ctrl_down && s_alt_down) {
+        printf("host: Ctrl+Alt+Del -> ResetMSX\n");
+        ResetMSX(Mode, RAMPages, VRAMPages);
+        s_ctrl_down = s_alt_down = false;
+        memset((void *)XKeyState, 0xFF, sizeof(XKeyState));
+        memset((void *)KeyState,  0xFF, sizeof(KeyState));
+        return;
+    }
+
+    /* F11 toggles the loader overlay, F12 the Settings dialog. */
+    if (sc == PSC_F11) {
+        if (pressed) msx_ui_toggle();
+        return;
+    }
+    if (sc == PSC_F12) {
+        if (pressed) msx_ui_toggle_settings();
+        return;
+    }
+
+    /* While the overlay is visible, forward key-down events to
+     * the UI and don't touch the MSX matrix. */
+    if (msx_ui_is_visible()) {
+        if (pressed) {
+            unsigned int xk = sc_to_xk(sc);
+            if (xk) msx_ui_handle_key(xk);
+        }
+        return;
+    }
+
+    unsigned char k = sc_to_msx(sc);
+    if (!k) return;
+    if (pressed) XKBD_SET(k);
+    else         XKBD_RES(k);
+}
+
 static void poll_inputs(void) {
     int pressed;
     unsigned char sc;
+
+    /* PS/2 keyboard (PIO-based driver). */
     ps2kbd_tick();
-    while (ps2kbd_get_key(&pressed, &sc)) {
-        /* Track modifier keys before anything else. */
-        if (sc == PSC_LCtrl || sc == PSC_RCtrl) s_ctrl_down = pressed;
-        if (sc == PSC_LAlt  || sc == PSC_RAlt ) s_alt_down  = pressed;
+    while (ps2kbd_get_key(&pressed, &sc))
+        handle_key_event(pressed, sc);
 
-        /* Ctrl+Alt+Del -> MSX hard reset. */
-        if (sc == PSC_Delete && pressed && s_ctrl_down && s_alt_down) {
-            printf("host: Ctrl+Alt+Del -> ResetMSX\n");
-            ResetMSX(Mode, RAMPages, VRAMPages);
-            s_ctrl_down = s_alt_down = false;
-            memset((void *)XKeyState, 0xFF, sizeof(XKeyState));
-            memset((void *)KeyState,  0xFF, sizeof(KeyState));
-            continue;
-        }
+    /* USB HID keyboard + mouse + gamepad. Stubs out to zero when
+     * USB_HID_ENABLED is off — no runtime cost on PS/2-only builds. */
+    usbhid_wrapper_tick();
+    while (usbhid_wrapper_get_key(&pressed, &sc))
+        handle_key_event(pressed, sc);
 
-        /* F11 toggles the loader overlay, F12 the Settings dialog. */
-        if (sc == PSC_F11) {
-            if (pressed) msx_ui_toggle();
-            continue;
-        }
-        if (sc == PSC_F12) {
-            if (pressed) msx_ui_toggle_settings();
-            continue;
-        }
-
-        /* While the overlay is visible, forward key-down events to
-         * the UI and don't touch the MSX matrix. */
-        if (msx_ui_is_visible()) {
-            if (pressed) {
-                unsigned int xk = sc_to_xk(sc);
-                if (xk) msx_ui_handle_key(xk);
-            }
-            continue;
-        }
-
-        unsigned char k = sc_to_msx(sc);
-        if (!k) continue;
-        if (pressed) XKBD_SET(k);
-        else         XKBD_RES(k);
-    }
-
+    unsigned int j = 0;
 #ifdef NESPAD_GPIO_CLK
     nespad_read();
-    unsigned int j = 0;
     /* Mask values come from drivers/nespad/nespad.h — the NES/SNES
      * serial shift layout spreads them across bits 0..14, not 0..7. */
     if (nespad_state & DPAD_UP)     j |= BTN_UP;
@@ -511,10 +525,11 @@ static void poll_inputs(void) {
     if (nespad_state & DPAD_B)      j |= BTN_FIREB;
     if (nespad_state & DPAD_SELECT) j |= BTN_SELECT;
     if (nespad_state & DPAD_START)  j |= BTN_START;
-    g_last_joystick = j;
-#else
-    g_last_joystick = 0;
 #endif
+    /* Merge the USB gamepad on top of the NES/SNES pad so either path
+     * drives the MSX joystick. */
+    j |= usbhid_wrapper_get_joystick();
+    g_last_joystick = j;
 }
 
 unsigned int GetJoystick(void) {
@@ -568,7 +583,12 @@ unsigned int Joystick(void) {
 
 void Keyboard(void) { /* handled inline by Joystick()/poll_inputs() */ }
 
-unsigned int Mouse(byte N) { (void)N; return 0; }
+unsigned int Mouse(byte N) {
+    /* USB mouse (if connected) surfaces on port 0 only. Port 1 stays
+     * idle — MSX.c reads Mouse(0) / Mouse(1) once per frame and copes
+     * with either returning zero. */
+    return usbhid_wrapper_get_mouse((int)N);
+}
 
 /* ==================================================================
  * PlayAllSound()

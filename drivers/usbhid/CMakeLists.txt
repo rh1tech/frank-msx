@@ -13,13 +13,16 @@ if(USB_HID_ENABLED)
     # Add the actual source files when enabled
     target_sources(usbhid INTERFACE
         ${CMAKE_CURRENT_LIST_DIR}/hid_app.c
+        ${CMAKE_CURRENT_LIST_DIR}/usbhid_wrapper.c
     )
-    
-    # Include this directory for tusb_config_usbhid.h (renamed to avoid conflict)
+
+    # Expose both this dir (tusb_config.h + usbhid.h) and the parent dir
+    # (usbhid_wrapper.h — also the stubbed header when USB_HID is off).
     target_include_directories(usbhid INTERFACE
         ${CMAKE_CURRENT_LIST_DIR}
+        ${CMAKE_CURRENT_LIST_DIR}/..
     )
-    
+
     target_compile_definitions(usbhid INTERFACE
         USB_HID_ENABLED=1
     )

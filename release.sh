@@ -80,6 +80,16 @@ mkdir -p "$RELEASE_DIR"
 VARIANTS=("M2")
 FAIL=0
 
+# Release defaults: USB HID host enabled (USB keyboard/mouse/gamepad).
+# Override with USB_HID=0 to produce a release UF2 with CDC stdio instead.
+: "${USB_HID:=1}"
+if [[ "$USB_HID" == "1" || "$USB_HID" == "ON" || "$USB_HID" == "on" ]]; then
+    USB_HID_CMAKE=ON
+else
+    USB_HID_CMAKE=OFF
+fi
+echo -e "USB HID host: ${CYAN}${USB_HID_CMAKE}${NC}"
+
 for VARIANT in "${VARIANTS[@]}"; do
     VARIANT_LOWER=$(echo "$VARIANT" | tr '[:upper:]' '[:lower:]')
     OUTPUT_NAME="frank-msx_${VARIANT_LOWER}_${VERSION}.uf2"
@@ -97,7 +107,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         -DPICO_PLATFORM=rp2350 \
         -DPICO_BOARD=pico2 \
         -DBOARD_VARIANT=${VARIANT} \
-        -DUSB_HID_ENABLED=OFF > /dev/null 2>&1
+        -DUSB_HID_ENABLED=${USB_HID_CMAKE} > /dev/null 2>&1
 
     if make -j$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4) > /dev/null 2>&1; then
         if [[ -f "frank-msx.uf2" ]]; then
