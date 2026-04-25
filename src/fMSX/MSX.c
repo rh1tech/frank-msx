@@ -58,6 +58,7 @@
 
 /** User-defined parameters for fMSX *************************/
 int  Mode        = MSX_MSX2|MSX_NTSC|MSX_MSXDOS2|MSX_GUESSA|MSX_GUESSB;
+extern int InMenu;                 /* 1 while loader overlay is up */
 byte Verbose     = 1;              /* Debug msgs ON/OFF      */
 byte UPeriod     = 75;             /* % of frames to draw    */
 int  VPeriod     = CPU_VPERIOD;    /* CPU cycles per VBlank  */
@@ -2188,8 +2189,16 @@ word LoopZ80(Z80 *R)
   /* Run V9938 engine */
   LoopVDP();
 
-  /* Refresh scanline, possibly with the overscan */
-  if((UCount>=100)&&Drawing&&(ScanLine<256))
+  /* Refresh scanline, possibly with the overscan.
+   *
+   * When the frank-msx loader/settings overlay is up (InMenu=1), skip
+   * the scanline render entirely so fMSX doesn't stomp the overlay
+   * pixels. Otherwise RefreshBorder's top-fill at Y=0 (and bottom fill
+   * at Y=last) overwrites rows 0..17 and 192..227 every frame, while
+   * msx_ui_render only runs once per PutImage (3/4 frames with
+   * UPeriod=75). The mismatch makes the loader's top/bottom flicker.
+   */
+  if((UCount>=100)&&Drawing&&(ScanLine<256)&&!InMenu)
   {
     if(!ModeYJK||(ScrMode<7)||(ScrMode>8))
       (RefreshLine[ScrMode])(ScanLine);
