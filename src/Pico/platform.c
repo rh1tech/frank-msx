@@ -28,7 +28,9 @@
 
 #include "board_config.h"
 #include "HDMI.h"
+#ifndef HDMI_HSTX
 #include "audio.h"
+#endif
 
 #include "ps2kbd_wrapper.h"
 #include "usbhid_wrapper.h"
@@ -305,12 +307,22 @@ extern unsigned audio_ring_push_mono(const int16_t *samples, unsigned count);
 extern unsigned audio_ring_free(void);
 
 unsigned int WriteAudio(sample *Data, unsigned int Length) {
-    /* Push whatever fits; Sound.c reacts to the short write by
-     * stopping its inner loop. Pacing comes from the sync alarm in
-     * PutImage() rather than from here — sharing the pacing between
-     * both paths caused deadlocks during long silent runs. */
     if (!Data || !Length) return 0;
+#ifdef HDMI_HSTX
+    /* HSTX path: audio rides on HDMI via data-island packets (non-
+     * blocking ring push). Mirrors murmnes's default HDMI audio
+     * routing — we do NOT also push to the external I2S DAC here, as
+     * that driver blocks on DMA buffer availability (~40 ms) and
+     * would throttle the emulator to a crawl. */
+    hdmi_hstx_push_samples((const int16_t *)Data, (int)Length);
+    return Length;
+#else
+    /* PIO HDMI path: hand off to the Core 0 → Core 1 ring. Pacing comes
+     * from the sync alarm in PutImage() rather than from here — sharing
+     * the pacing between both paths caused deadlocks during long silent
+     * runs. */
     return audio_ring_push_mono((const int16_t *)Data, Length);
+#endif
 }
 
 int PauseAudio(int Switch) { (void)Switch; return 0; }

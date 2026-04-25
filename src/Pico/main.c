@@ -21,7 +21,9 @@
 #include "HDMI.h"
 #include "psram_init.h"
 #include "psram_allocator.h"
+#ifndef HDMI_HSTX
 #include "audio.h"
+#endif
 #include "ff.h"
 #include "nespad/nespad.h"
 #include "ps2kbd_wrapper.h"
@@ -87,7 +89,10 @@ static uint32_t __attribute__((aligned(4))) g_audio_ring[AUDIO_RING_FRAMES];
 static volatile uint32_t g_audio_prod = 0;  /* core 0 writes */
 static volatile uint32_t g_audio_cons = 0;  /* core 1 reads  */
 
-/* Producer API — called from platform.c:WriteAudio(). Samples are 16-bit
+/* Producer API — called from platform.c:WriteAudio() on the PIO HDMI
+ * path. The HSTX path drives I2S + HDMI audio directly from core 0 and
+ * doesn't need the ring, but we keep these symbols defined so linker
+ * references from unused fallback code still resolve. Samples are 16-bit
  * signed mono; we broadcast into L+R. Returns samples written (drops on
  * overflow rather than blocking core 0). */
 unsigned audio_ring_push_mono(const int16_t *samples, unsigned count) {
@@ -112,6 +117,7 @@ unsigned audio_ring_free(void) {
 /* ---- Render core (Core 1): boots audio + drains the ring ------------- */
 static volatile bool core1_ready = false;
 
+#ifndef HDMI_HSTX
 void __time_critical_func(render_core)(void) {
     static i2s_config_t i2s_cfg;
     i2s_cfg = i2s_get_default_config();
@@ -146,6 +152,7 @@ void __time_critical_func(render_core)(void) {
         i2s_dma_write(&i2s_cfg, (const int16_t *)chunk);
     }
 }
+#endif /* !HDMI_HSTX */
 
 /* ---- Entry point ----------------------------------------------------- */
 
@@ -246,10 +253,18 @@ int main(void) {
     usbhid_wrapper_init();
 
     /* 8. Launch audio core */
+#ifdef HDMI_HSTX
+    /* HSTX path: Core 1 is already running `video_output_core1_run` from
+     * graphics_init(). Audio rides on HDMI via data-island packets pushed
+     * from WriteAudio() (same model as murmnes's default HDMI audio). */
+    core1_ready = true;
+    printf("HDMI_HSTX: Core 1 running HSTX scanout, audio on HDMI\n");
+#else
     printf("Starting render core (audio)...\n");
     multicore_launch_core1(render_core);
     while (!core1_ready) tight_loop_contents();
     printf("Render core ready\n");
+#endif
 
 #ifdef PICO_DEFAULT_LED_PIN
     gpio_put(PICO_DEFAULT_LED_PIN, 0);

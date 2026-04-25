@@ -17,6 +17,11 @@ set(MSX_MODEL "3" CACHE STRING "MSX model to emulate (1, 2, or 3)")
 # Optional USB HID host (disabled by default since we focus on PS/2)
 option(USB_HID_ENABLED "Enable USB HID host" OFF)
 
+# Video output driver selection — PIO HDMI by default; HSTX HDMI when
+# HDMI_HSTX=ON is passed (both cannot be enabled at the same time).
+# HSTX carries HDMI audio as data-island packets out of the box.
+option(HDMI_HSTX "Use the RP2350 HSTX-based HDMI driver (with HDMI audio)" OFF)
+
 # CPU voltage selection based on speed
 if(CPU_SPEED GREATER_EQUAL 400)
     set(CPU_VOLTAGE "VREG_VOLTAGE_1_60")
@@ -50,10 +55,25 @@ add_subdirectory(drivers/nespad)
 add_subdirectory(drivers/ps2)
 add_subdirectory(drivers/usbhid)
 
-# Video + audio + PSRAM live in a single "drivers" library
+#-----------------------------------------------------------------------------
+# HSTX HDMI driver (copied verbatim from murmnes/frank-nes pico_hdmi/)
+#-----------------------------------------------------------------------------
+if(HDMI_HSTX)
+    add_subdirectory(drivers/pico_hdmi)
+endif()
+
+# Video + audio + PSRAM live in a single "drivers" library. The video
+# driver source swaps depending on HDMI_HSTX: the PIO HDMI path compiles
+# HDMI.c + hdmi_scanline.S, while the HSTX path compiles HDMI_hstx.c and
+# leans on the pico_hdmi/i2s subdirectories above.
+if(HDMI_HSTX)
+    set(_VIDEO_DRIVER_SRC drivers/HDMI_hstx.c)
+else()
+    set(_VIDEO_DRIVER_SRC drivers/HDMI.c drivers/hdmi_scanline.S)
+endif()
+
 add_library(drivers
-    drivers/HDMI.c
-    drivers/hdmi_scanline.S
+    ${_VIDEO_DRIVER_SRC}
     drivers/psram_init.c
     drivers/psram_allocator.c
     drivers/dlmalloc.c
@@ -83,6 +103,11 @@ target_link_libraries(drivers
     hardware_irq
     hardware_vreg
 )
+
+if(HDMI_HSTX)
+    target_link_libraries(drivers pico_multicore pico_hdmi)
+    target_compile_definitions(drivers PUBLIC HDMI_HSTX=1)
+endif()
 
 #-----------------------------------------------------------------------------
 # fMSX core (portable C)
@@ -145,6 +170,11 @@ target_include_directories(frank-msx PRIVATE
 
 if(USB_HID_ENABLED)
     target_include_directories(frank-msx PRIVATE drivers/usbhid)
+endif()
+
+if(HDMI_HSTX)
+    target_compile_definitions(frank-msx PRIVATE HDMI_HSTX=1)
+    target_include_directories(frank-msx PRIVATE drivers)
 endif()
 
 target_compile_definitions(frank-msx PRIVATE

@@ -6,8 +6,10 @@
 # Only M2 is supported right now. Defaults: 252 / 133 / 66.
 #
 # Env vars:
-#   USB_HID   0 = PS/2 only + USB CDC stdio   (default for dev builds)
-#             1 = USB HID host keyboard/mouse/gamepad; CDC stdio off
+#   USB_HID     0 = PS/2 only + USB CDC stdio   (default for dev builds)
+#               1 = USB HID host keyboard/mouse/gamepad; CDC stdio off
+#   HDMI_HSTX   0 = legacy PIO HDMI driver (default)
+#               1 = RP2350 HSTX HDMI driver (with HDMI audio over data islands)
 #
 set -e
 
@@ -21,11 +23,18 @@ BOARD_VARIANT="${1:-M2}"
 : "${FLASH_SPEED:=${4:-66}}"
 : "${MSX_MODEL:=${5:-3}}"   # 1 = MSX1, 2 = MSX2, 3 = MSX2+ (default)
 : "${USB_HID:=0}"           # 0 = off (dev), 1 = on (release)
+: "${HDMI_HSTX:=0}"         # 0 = PIO HDMI (default), 1 = HSTX HDMI+audio
 
 if [[ "$USB_HID" == "1" || "$USB_HID" == "ON" || "$USB_HID" == "on" ]]; then
     USB_HID_CMAKE=ON
 else
     USB_HID_CMAKE=OFF
+fi
+
+if [[ "$HDMI_HSTX" == "1" || "$HDMI_HSTX" == "ON" || "$HDMI_HSTX" == "on" ]]; then
+    HDMI_HSTX_CMAKE=ON
+else
+    HDMI_HSTX_CMAKE=OFF
 fi
 
 cmake \
@@ -37,6 +46,7 @@ cmake \
     -DFLASH_SPEED=${FLASH_SPEED} \
     -DMSX_MODEL=${MSX_MODEL} \
     -DUSB_HID_ENABLED=${USB_HID_CMAKE} \
+    -DHDMI_HSTX=${HDMI_HSTX_CMAKE} \
     ..
 
 make -j$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)

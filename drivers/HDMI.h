@@ -69,6 +69,12 @@ void graphics_set_mode(enum graphics_mode_t mode);
 struct video_mode_t graphics_get_video_mode(int mode);
 void graphics_set_bgcolor(uint32_t color888);
 
+#ifdef HDMI_HSTX
+/* Push mono int16 audio samples into the HSTX data-island queue. */
+void hdmi_hstx_push_samples(const int16_t *buf, int count);
+void hdmi_hstx_fill_silence(int count);
+#endif
+
 void graphics_set_crt_active(bool active);
 bool graphics_get_crt_active(void);
 void graphics_set_greyscale(bool active);
