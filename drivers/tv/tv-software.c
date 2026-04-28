@@ -1067,6 +1067,39 @@ static bool __time_critical_func(video_timer_callbackTV)(repeating_timer_t* rt) 
     return true;
 }
 
+/* ------------------------------------------------------------------------
+ * Direct hardware-alarm IRQ (replaces alarm_pool_add_repeating_timer_us).
+ *
+ * The SDK's alarm-pool dispatcher (alarm_pool_irq_handler) lives in
+ * flash. Firing it at 30 kHz thrashes the XIP cache shared between the
+ * two RP2350 cores and starves Core 0's fMSX Z80 hot path — the
+ * emulator drops to ~1 fps. This hooks the timer alarm IRQ directly
+ * so the entire dispatch path is pure SRAM.
+ * ------------------------------------------------------------------------ */
+#include "hardware/timer.h"
+#include "hardware/irq.h"
+
+#ifndef TV_HW_ALARM_NUM
+#define TV_HW_ALARM_NUM 2   /* alarm 0 is used by the SDK default pool */
+#endif
+
+static uint32_t tv_alarm_interval_us = 33;
+
+static void __not_in_flash_func(tv_alarm_irq_handler)(void) {
+    timer_hw->intr = 1u << TV_HW_ALARM_NUM;
+    timer_hw->alarm[TV_HW_ALARM_NUM] = timer_hw->timerawl + tv_alarm_interval_us;
+    video_timer_callbackTV(NULL);
+}
+
+static void tv_alarm_init(uint32_t interval_us) {
+    tv_alarm_interval_us = interval_us;
+    uint irq_num = TIMER0_IRQ_0 + TV_HW_ALARM_NUM;
+    hw_set_bits(&timer_hw->inte, 1u << TV_HW_ALARM_NUM);
+    irq_set_exclusive_handler(irq_num, tv_alarm_irq_handler);
+    irq_set_enabled(irq_num, true);
+    timer_hw->alarm[TV_HW_ALARM_NUM] = timer_hw->timerawl + interval_us;
+}
+
 void graphics_set_buffer(uint8_t* buffer, const uint16_t width, const uint16_t height) {
     graphics_buffer.data = buffer;
     graphics_buffer.width = width;
@@ -1187,11 +1220,20 @@ void graphics_init() {
 
     dma_start_channel_mask((1u << dma_chan_ctrl2));
 
-    int hz = 30000;
-    if (!alarm_pool_add_repeating_timer_us(alarm_pool_create(2, 16), 1000000 / hz, video_timer_callbackTV, NULL,
-                                           &video_timer)) {
-        return;
-    }
+    /* Direct hardware-alarm IRQ instead of alarm_pool_add_repeating_timer_us.
+     *
+     * The SDK's alarm pool dispatches via a flash-resident handler
+     * (alarm_pool_irq_handler). At 30 kHz that handler's flash fetches
+     * keep the XIP cache shared between the two cores pinned on Core 1's
+     * needs — Core 0's fMSX Z80 hot path is also in flash and starves,
+     * collapsing the emulator to ~1 fps.
+     *
+     * We replace the alarm-pool path with a direct NVIC handler that
+     * lives in SRAM (tv_alarm_irq_handler below). It rearms the hardware
+     * alarm and calls video_timer_callbackTV directly — zero flash
+     * fetches per IRQ.
+     */
+    tv_alarm_init(1000000u / 30000u);
     // graphics_get_default_modeTV();
     graphics_set_modeTV(tv_out_mode);
     // FIXME сделать конфигурацию пользователем

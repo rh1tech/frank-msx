@@ -138,13 +138,32 @@ void graphics_init(g_out g) {
     while (!tv_core1_ready) tight_loop_contents();
 }
 
-void graphics_set_buffer(uint8_t *buffer) {
+/* SRAM-resident aligned-word copy. Called from Core 0 every PutImage
+ * (~60× per second) to push the MSX back buffer into the TV frame. If
+ * we used the flash-resident libc memcpy instead, every frame would
+ * thrash Core 0's XIP cache — and fMSX's hot path lives in flash, so
+ * that translates directly into ~60 Hz of cache-miss stalls on the
+ * emulator thread. */
+static void __not_in_flash("tv_blit") tv_blit_frame(uint8_t *dst,
+                                                    const uint8_t *src,
+                                                    size_t n_words) {
+    uint32_t *d = (uint32_t *)dst;
+    const uint32_t *s = (const uint32_t *)src;
+    while (n_words >= 8) {
+        d[0] = s[0]; d[1] = s[1]; d[2] = s[2]; d[3] = s[3];
+        d[4] = s[4]; d[5] = s[5]; d[6] = s[6]; d[7] = s[7];
+        d += 8; s += 8; n_words -= 8;
+    }
+    while (n_words--) *d++ = *s++;
+}
+
+void __not_in_flash_func(graphics_set_buffer)(uint8_t *buffer) {
     if (!buffer) return;
     /* 256×228 MSX frame → 256×240 TV frame with 6 black lines top and
-     * bottom. Copy under an aligned-word loop; alignment is guaranteed
-     * since both buffers are 4-byte aligned and MSX_W is a multiple of
-     * 4. A single memcpy suffices. */
-    memcpy(&tv_frame[TOP_MARGIN * TV_FB_W], buffer, (size_t)MSX_W * MSX_H);
+     * bottom. Word-aligned (MSX_W is a multiple of 4, tv_frame is
+     * aligned(4), and MSX SCREEN[] buffers are aligned(4) in main.c). */
+    tv_blit_frame(&tv_frame[TOP_MARGIN * TV_FB_W], buffer,
+                  ((size_t)MSX_W * MSX_H) >> 2);
 }
 
 uint8_t *graphics_get_buffer(void) { return tv_frame; }
@@ -168,7 +187,7 @@ void graphics_set_shift(int x, int y) {
     tv_shift_y = y;
 }
 
-void graphics_set_palette(uint8_t i, uint32_t color888) {
+void __not_in_flash_func(graphics_set_palette)(uint8_t i, uint32_t color888) {
     if (!tv_core1_ready) return;
     /* Don't let fMSX stomp the reserved text/border slots — see comment
      * by TV_PALETTE_RESERVED_LO above. */

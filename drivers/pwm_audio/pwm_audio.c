@@ -211,28 +211,36 @@ void pwm_audio_init(uint pin_l, uint pin_r, uint32_t sample_rate) {
         (unsigned)(32u - __builtin_clz(pwm_wrap)));
 }
 
-/* Claim an idle DMA buffer (blocks briefly if both are still playing).
- * Returns the buffer index. Must be matched by commit_buf(). */
+/* Claim an idle DMA buffer. Returns the buffer index, or 0xFF if no
+ * buffer is free (caller should drop samples).
+ *
+ * Used to block until a buffer freed up, which is fine for an emulator
+ * pinned to real-time but disastrous on any path where Core 0 itself
+ * paces playback — e.g. the composite-TV build, where the emulator
+ * produces samples at emulated-MSX rate (50 Hz × 441 samples = 22050
+ * samples/s steady state). If the emulator runs slower than realtime
+ * for a few ms, the DMA drains ahead, both buffers re-fill with fresh
+ * emu output, and Core 0 is free to resume. Blocking creates a
+ * self-reinforcing deadlock: Core 0 waits for a buffer, but can't run
+ * the emulator to create new samples (because it's blocking). */
 static uint8_t claim_buf(void) {
-    while (true) {
-        uint32_t irq_state = save_and_disable_interrupts();
-        uint32_t free = bufs_free_mask;
-        if (!dma_running) {
-            uint8_t idx = (uint8_t)preroll_count;
-            if (idx < DMA_BUFFER_COUNT && (free & (1u << idx))) {
-                bufs_free_mask &= ~(1u << idx);
-                restore_interrupts(irq_state);
-                return idx;
-            }
-        } else if (free) {
-            uint8_t idx = (free & 1u) ? 0 : 1;
+    uint32_t irq_state = save_and_disable_interrupts();
+    uint32_t free = bufs_free_mask;
+    if (!dma_running) {
+        uint8_t idx = (uint8_t)preroll_count;
+        if (idx < DMA_BUFFER_COUNT && (free & (1u << idx))) {
             bufs_free_mask &= ~(1u << idx);
             restore_interrupts(irq_state);
             return idx;
         }
+    } else if (free) {
+        uint8_t idx = (free & 1u) ? 0 : 1;
+        bufs_free_mask &= ~(1u << idx);
         restore_interrupts(irq_state);
-        tight_loop_contents();
+        return idx;
     }
+    restore_interrupts(irq_state);
+    return 0xFF;
 }
 
 static void commit_buf(uint8_t idx, uint32_t frame_count) {
@@ -279,6 +287,16 @@ void pwm_audio_push_samples(const int16_t *buf, int count) {
         if (chunk > (int)dma_xfer_count) chunk = (int)dma_xfer_count;
 
         uint8_t idx = claim_buf();
+        if (idx == 0xFF) {
+            /* No DMA buffer free — drop this chunk rather than stall
+             * Core 0 waiting on playback. On an emulator that runs at
+             * real MSX rate the DMA always has headroom; only a slow
+             * emulator would actually hit this path, and dropping
+             * samples lets the emulator catch back up instead of
+             * deadlocking against its own audio producer. */
+            pos += chunk;
+            continue;
+        }
         uint32_t *dst = dma_bufs[idx];
 
         for (int i = 0; i < chunk; i++) {
@@ -319,6 +337,12 @@ void pwm_audio_fill_silence(int count) {
         if (chunk > (int)dma_xfer_count) chunk = (int)dma_xfer_count;
 
         uint8_t idx = claim_buf();
+        if (idx == 0xFF) {
+            /* Both buffers busy — silence is whatever drained last, so
+             * dropping is harmless. */
+            remaining -= chunk;
+            continue;
+        }
         uint32_t *dst = dma_bufs[idx];
         for (int i = 0; i < chunk; i++) dst[i] = silence;
 
