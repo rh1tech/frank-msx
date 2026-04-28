@@ -43,6 +43,7 @@
 
 #include "MSX.h"
 #include "EMULib.h"
+#include "msx_boot.h"
 
 /* ---- Framebuffers the HDMI driver expects ---------------------------- */
 /* HDMI.c reads `SCREEN[!current_buffer]` at the configured stride. We
@@ -347,11 +348,16 @@ int main(void) {
     psram_reset();
     printf("PSRAM initialized (8 MB)\n");
 
-    /* 4. SD card */
+    /* 4. SD card.
+     *
+     * The SD probe runs early so we can surface a user-visible error
+     * screen (via msx_boot_fatal) later — but we postpone that until
+     * after graphics are up. Stash the result. */
     printf("Mounting SD card...\n");
     FRESULT fr = f_mount(&g_fs, "", 1);
-    if (fr != FR_OK) {
-        printf("WARNING: SD card not mounted (%d). Continuing without storage.\n", fr);
+    bool sd_mounted = (fr == FR_OK);
+    if (!sd_mounted) {
+        printf("WARNING: SD card not mounted (%d).\n", fr);
     } else {
         printf("SD card mounted\n");
     }
@@ -388,7 +394,11 @@ int main(void) {
     /* 7. PS/2 + NES pad first, so they grab their PIO1 state machines
      * (SM0 + SM2 for PS/2) before I2S audio claims the next unused one.
      * If audio comes up first it takes PIO1 SM0 and the PS/2 driver's
-     * hard-coded pio_sm_claim(pio1, 0) panics. */
+     * hard-coded pio_sm_claim(pio1, 0) panics.
+     *
+     * Input init has to run BEFORE the boot splash — otherwise
+     * msx_boot_welcome() calls ps2kbd_tick() / usbhid_wrapper_tick()
+     * on an uninitialised driver and hangs. */
     printf("Initializing PS/2 keyboard + mouse...\n");
     ps2kbd_init();
 #ifdef NESPAD_GPIO_CLK
@@ -404,6 +414,24 @@ int main(void) {
      * pico_stdio_usb for CDC printf instead. */
     printf("Initializing USB HID host...\n");
     usbhid_wrapper_init();
+
+    /* Boot-time welcome. Drawn directly into SCREEN[] before anyone
+     * else (ui_draw / fMSX) touches the palette. Exits on any input
+     * or after ~3 s. */
+    printf("Showing welcome screen...\n");
+    msx_boot_welcome(10000);
+    printf("Welcome screen done\n");
+
+    /* SD card + BIOS sanity check. This either returns normally, or
+     * paints a full-screen error explaining what's missing and spins
+     * until the user power-cycles. Runs before InitMachine so fMSX
+     * never gets the chance to panic silently on a broken card. */
+    {
+#ifndef FRANK_MSX_MODEL
+#define FRANK_MSX_MODEL 3
+#endif
+        msx_boot_require_bios(sd_mounted, FRANK_MSX_MODEL);
+    }
 
     /* 8. Launch audio core */
 #if defined(HDMI_HSTX)
