@@ -18,6 +18,11 @@ msx_settings_t g_settings = {
     .joy2      = 1,                 /* Joystick */
     .scanlines = MSX_SCAN_OFF,
     .color     = MSX_COLOR_NORMAL,
+#ifdef HDMI_HSTX
+    .audio_mode = MSX_AUDIO_HDMI,   /* HSTX ships with HDMI audio out */
+#else
+    .audio_mode = MSX_AUDIO_I2S,    /* PIO HDMI can't carry audio */
+#endif
 };
 
 /* ---- value tables ---------------------------------------------------- */
@@ -57,6 +62,27 @@ static const char *COLOR_LABELS[MSX_COLOR_COUNT] = {
     "Amber",
 };
 
+static const char *AUDIO_LABELS[MSX_AUDIO_COUNT] = {
+    "HDMI",
+    "I2S",
+    "PWM",
+    "Disabled",
+};
+
+/* On HSTX builds the full cycle HDMI → I2S → PWM → Disabled is
+ * available. On PIO builds HDMI audio has no carrier, so HDMI is
+ * removed from the cycle (I2S → PWM → Disabled). */
+#ifdef HDMI_HSTX
+static const uint8_t AUDIO_CYCLE[] = {
+    MSX_AUDIO_HDMI, MSX_AUDIO_I2S, MSX_AUDIO_PWM, MSX_AUDIO_DISABLED,
+};
+#else
+static const uint8_t AUDIO_CYCLE[] = {
+    MSX_AUDIO_I2S, MSX_AUDIO_PWM, MSX_AUDIO_DISABLED,
+};
+#endif
+#define AUDIO_CYCLE_LEN ((int)(sizeof(AUDIO_CYCLE) / sizeof(AUDIO_CYCLE[0])))
+
 int msx_settings_choices(msx_setting_id_t id) {
     switch (id) {
         case MSX_SETTING_MODEL:     return (int)(sizeof(MODEL_LABELS) / sizeof(MODEL_LABELS[0]));
@@ -67,6 +93,7 @@ int msx_settings_choices(msx_setting_id_t id) {
         case MSX_SETTING_JOY2:      return (int)(sizeof(JOY_LABELS)   / sizeof(JOY_LABELS[0]));
         case MSX_SETTING_SCANLINES: return MSX_SCAN_COUNT;
         case MSX_SETTING_COLOR:     return MSX_COLOR_COUNT;
+        case MSX_SETTING_AUDIO:     return AUDIO_CYCLE_LEN;
         default:                    return 0;
     }
 }
@@ -81,6 +108,7 @@ const char *msx_settings_label(msx_setting_id_t id) {
         case MSX_SETTING_JOY2:      return "Joystick 2";
         case MSX_SETTING_SCANLINES: return "Scanlines";
         case MSX_SETTING_COLOR:     return "Color filter";
+        case MSX_SETTING_AUDIO:     return "Audio";
         default:                    return "?";
     }
 }
@@ -95,14 +123,20 @@ const char *msx_settings_value_label(msx_setting_id_t id) {
         case MSX_SETTING_JOY2:      return JOY_LABELS[g_settings.joy2];
         case MSX_SETTING_SCANLINES: return SCANLINE_LABELS[g_settings.scanlines];
         case MSX_SETTING_COLOR:     return COLOR_LABELS[g_settings.color];
+        case MSX_SETTING_AUDIO:
+            if (g_settings.audio_mode < MSX_AUDIO_COUNT)
+                return AUDIO_LABELS[g_settings.audio_mode];
+            return "?";
         default:                    return "?";
     }
 }
 
 bool msx_settings_needs_reset(msx_setting_id_t id) {
-    /* Visual-only settings apply live; everything else rebuilds the
-     * machine. */
-    return !(id == MSX_SETTING_SCANLINES || id == MSX_SETTING_COLOR);
+    /* Visual-only + audio-routing settings apply live; everything
+     * else rebuilds the machine. */
+    return !(id == MSX_SETTING_SCANLINES ||
+             id == MSX_SETTING_COLOR     ||
+             id == MSX_SETTING_AUDIO);
 }
 
 static void step_u8(uint8_t *v, int delta, int n) {
@@ -126,6 +160,16 @@ void msx_settings_step(msx_setting_id_t id, int delta) {
                                     msx_settings_apply_visual();            break;
         case MSX_SETTING_COLOR:     step_u8(&g_settings.color,     delta, n);
                                     msx_settings_apply_visual();            break;
+        case MSX_SETTING_AUDIO: {
+            /* Cycle through the per-build allowed set. */
+            int idx = 0;
+            for (int i = 0; i < AUDIO_CYCLE_LEN; i++) {
+                if (AUDIO_CYCLE[i] == g_settings.audio_mode) { idx = i; break; }
+            }
+            idx = (idx + AUDIO_CYCLE_LEN + delta) % AUDIO_CYCLE_LEN;
+            g_settings.audio_mode = AUDIO_CYCLE[idx];
+            break;
+        }
         default: break;
     }
 }

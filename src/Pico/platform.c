@@ -306,23 +306,14 @@ unsigned int GetTotalAudio(void) { return AUDIO_RING_FRAMES_TOTAL; }
 extern unsigned audio_ring_push_mono(const int16_t *samples, unsigned count);
 extern unsigned audio_ring_free(void);
 
+extern void audio_dispatch_push_samples(const int16_t *buf, int count);
+
 unsigned int WriteAudio(sample *Data, unsigned int Length) {
     if (!Data || !Length) return 0;
-#ifdef HDMI_HSTX
-    /* HSTX path: audio rides on HDMI via data-island packets (non-
-     * blocking ring push). Mirrors murmnes's default HDMI audio
-     * routing — we do NOT also push to the external I2S DAC here, as
-     * that driver blocks on DMA buffer availability (~40 ms) and
-     * would throttle the emulator to a crawl. */
-    hdmi_hstx_push_samples((const int16_t *)Data, (int)Length);
+    /* All routing lives in main.c's dispatcher. Picks HDMI / I2S / PWM
+     * / Disabled based on g_settings.audio_mode. */
+    audio_dispatch_push_samples((const int16_t *)Data, (int)Length);
     return Length;
-#else
-    /* PIO HDMI path: hand off to the Core 0 → Core 1 ring. Pacing comes
-     * from the sync alarm in PutImage() rather than from here — sharing
-     * the pacing between both paths caused deadlocks during long silent
-     * runs. */
-    return audio_ring_push_mono((const int16_t *)Data, Length);
-#endif
 }
 
 int PauseAudio(int Switch) { (void)Switch; return 0; }

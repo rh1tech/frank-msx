@@ -101,9 +101,15 @@ static inline uint get_psram_pin(void) {
 #define NESPAD_GPIO_DATA  26
 #endif
 
-/* I2S audio */
+/* I2S audio (external DAC) */
 #define I2S_DATA_PIN       9
 #define I2S_CLOCK_PIN_BASE 10
+
+/* PWM audio (RC low-pass filter on pins). Shares GPIO 10/11 with the
+ * I2S output — only one audio backend can drive those pins at a time,
+ * selected at runtime via Settings → Audio. */
+#define PWM_PIN0           10
+#define PWM_PIN1           11
 
 #endif /* BOARD_M2 */
 

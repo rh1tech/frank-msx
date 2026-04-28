@@ -21,8 +21,21 @@ typedef enum {
     MSX_SETTING_JOY2,
     MSX_SETTING_SCANLINES,    /* None / TV / LCD / LCD Raster (live) */
     MSX_SETTING_COLOR,        /* Normal / Monochrome / Sepia / Green / Amber (live) */
+    MSX_SETTING_AUDIO,        /* HDMI / I2S / PWM / Disabled (live) */
     MSX_SETTING_COUNT
 } msx_setting_id_t;
+
+/* Audio-output backend. HDMI is only reachable on HSTX builds — the
+ * PIO HDMI path never carries audio. I2S targets the external DAC on
+ * GP9/10/11; PWM drives GP10/11 through an RC filter. Both SHARE the
+ * same GPIOs, so switching between them re-configures pin function. */
+typedef enum {
+    MSX_AUDIO_HDMI = 0,
+    MSX_AUDIO_I2S,
+    MSX_AUDIO_PWM,
+    MSX_AUDIO_DISABLED,
+    MSX_AUDIO_COUNT
+} msx_audio_mode_t;
 
 /* Scanline enum values match the order of SCANLINE_LABELS.
  * Only Off/On are supported today — our HDMI driver has a single
@@ -54,6 +67,7 @@ typedef struct {
     uint8_t joy2;        /* 0..3 */
     uint8_t scanlines;   /* msx_scanlines_t */
     uint8_t color;       /* msx_color_filter_t */
+    uint8_t audio_mode;  /* msx_audio_mode_t */
 } msx_settings_t;
 
 extern msx_settings_t g_settings;
