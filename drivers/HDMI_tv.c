@@ -81,6 +81,23 @@ static int tv_shift_y = 0;
 static volatile bool tv_core1_ready = false;
 
 /* ------------------------------------------------------------------ */
+/* Palette slots 200..215 are reserved by the TV driver for its
+ * hard-coded CGA-16 text palette, AND the render loop in tv-software.c
+ * uses `color = 200` as the left/right border fill whenever x is
+ * outside the active image area. The MSX image is only 256 px wide
+ * while the TV active area is ~320 source pixels, so the rightmost
+ * ~64 pixels of every scanline hit that border path.
+ *
+ * frank-msx's platform.c cycles SCREEN8 palette allocations through
+ * slots 16..239, which without this guard eventually overwrites slot
+ * 200 with whatever SCREEN8 colour the MSX happened to emit last,
+ * producing the yellow/green vertical band on the right edge. We
+ * protect the whole CGA-reserved range so the border stays black and
+ * the MSX 16-colour palette (which lives in 0..15) is unaffected. */
+#define TV_PALETTE_RESERVED_LO  200
+#define TV_PALETTE_RESERVED_HI  215
+
+/* ------------------------------------------------------------------ */
 /* Core 1 entry point.
  *
  * Claims PIO0, three DMA channels and a 30 kHz alarm-pool timer on
@@ -88,11 +105,20 @@ static volatile bool tv_core1_ready = false;
  * entirely inside the timer ISR. */
 static void tv_core1_run(void) {
     tv_graphics_init();
+    /* The tv-software renderer clips vertically against a hard-coded
+     * y >= 240 test, so we leave the buffer pointing at the full
+     * 256×240 tv_frame (rows 0..5 and 234..239 stay black) and use
+     * shift_x alone to centre the 256-wide MSX image on the ~320-pixel
+     * active composite line. The TV renderer fills the 32-pixel side
+     * margins with palette slot 200, which we force to black below. */
     tv_graphics_set_buffer(tv_frame, TV_FB_W, TV_FB_H);
     tv_graphics_set_mode(TV_GRAPHICSMODE_DEFAULT);
-    tv_graphics_set_offset(0, 0);
-    /* Black border — palette entry 0 is the MSX background colour. */
-    tv_graphics_set_palette(0, 0);
+    tv_graphics_set_offset((320 - TV_FB_W) / 2, 0);
+    /* Force slot 200 to pure black so the 64-pixel wide border on the
+     * right edge is invisible. tv_graphics_init() already pre-loaded
+     * 200..215 with CGA defaults, but we override 200 now and the
+     * host-side shim below blocks any subsequent writes to 200..215. */
+    tv_graphics_set_palette(TV_PALETTE_RESERVED_LO, 0x000000);
     __dmb();
     tv_core1_ready = true;
     __dmb();
@@ -144,6 +170,9 @@ void graphics_set_shift(int x, int y) {
 
 void graphics_set_palette(uint8_t i, uint32_t color888) {
     if (!tv_core1_ready) return;
+    /* Don't let fMSX stomp the reserved text/border slots — see comment
+     * by TV_PALETTE_RESERVED_LO above. */
+    if (i >= TV_PALETTE_RESERVED_LO && i <= TV_PALETTE_RESERVED_HI) return;
     tv_graphics_set_palette(i, color888);
 }
 

@@ -101,11 +101,39 @@ if(VIDEO_COMPOSITE)
         drivers/tv/graphics.c
     )
     target_include_directories(tv_driver PUBLIC drivers drivers/tv)
+    # Rename every public TV-driver symbol to a tv_* prefix so they
+    # don't collide with frank-msx's HDMI.h API; and replace memset /
+    # memcpy with inline SRAM-resident fast paths so the 30 kHz
+    # scanline ISR doesn't thrash the XIP cache (fMSX drops to ~1 fps
+    # otherwise).  Passed through "SHELL:" so CMake doesn't de-dupe
+    # the repeated -include flags.
+    # C-only: two -include headers (rename + SRAM memset/memcpy), plus
+    # the existing warning-noise suppressors. We apply the -include
+    # flags per-source instead of via target_compile_options because
+    # CMake's SHELL: + generator-expression combo doesn't preserve the
+    # "-include path" argument pair reliably.
+    set(_tv_include_flags
+        "-include ${CMAKE_CURRENT_SOURCE_DIR}/drivers/tv/tv_rename.h"
+        "-include ${CMAKE_CURRENT_SOURCE_DIR}/drivers/tv/tv_mem.h"
+    )
+    string(JOIN " " _tv_include_flags_str ${_tv_include_flags})
+    set_source_files_properties(
+        drivers/tv/tv-software.c
+        drivers/tv/graphics.c
+        PROPERTIES
+        COMPILE_FLAGS "${_tv_include_flags_str}"
+    )
     target_compile_options(tv_driver PRIVATE
-        -include ${CMAKE_CURRENT_SOURCE_DIR}/drivers/tv/tv_rename.h
         -Wno-error
         -Wno-incompatible-pointer-types
         -Wno-all
+        # GCC's loop-idiom pass rewrites our hand-inlined fills back into
+        # memset()/memcpy() calls, defeating the whole point of tv_mem.h.
+        # Disable the two passes that do this so the inline SRAM loops
+        # survive to object code.
+        -fno-tree-loop-distribute-patterns
+        -fno-builtin-memset
+        -fno-builtin-memcpy
     )
     target_link_libraries(tv_driver
         pico_stdlib
