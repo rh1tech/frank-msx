@@ -22,8 +22,12 @@
 #include "HDMI.h"
 #include "psram_init.h"
 #include "psram_allocator.h"
-#ifdef HDMI_HSTX
+#if defined(HDMI_HSTX)
 #include "i2s_audio.h"
+#elif defined(VIDEO_COMPOSITE)
+/* TV path: Core 1 is owned by the scanline timer, so the ring-fed I2S
+ * render loop is never started. audio.h isn't included at all — we
+ * don't want to accidentally reference its helpers. */
 #else
 #include "audio.h"
 #endif
@@ -169,7 +173,7 @@ void audio_dispatch_push_samples(const int16_t *buf, int count) {
 #endif
         return;
     }
-#ifdef HDMI_HSTX
+#if defined(HDMI_HSTX)
     if (mode == MSX_AUDIO_I2S) {
         ensure_i2s_initialized();
         i2s_audio_push_samples(buf, count);
@@ -178,6 +182,11 @@ void audio_dispatch_push_samples(const int16_t *buf, int count) {
     }
     /* Default (MSX_AUDIO_HDMI). */
     hdmi_hstx_push_samples(buf, count);
+#elif defined(VIDEO_COMPOSITE)
+    /* Composite-TV build: Core 1 is the scanline timer; there's no I2S
+     * render core and no HDMI audio path. Everything falls back to PWM. */
+    ensure_pwm_audio_initialized();
+    pwm_audio_push_samples(buf, count);
 #else
     /* PIO HDMI build: HDMI audio is not available, so HDMI mode
      * collapses onto the I2S ring path. I2S mode is the same path. */
@@ -201,7 +210,7 @@ void audio_dispatch_fill_silence(int count) {
 #endif
         return;
     }
-#ifdef HDMI_HSTX
+#if defined(HDMI_HSTX)
     if (mode == MSX_AUDIO_I2S) {
         ensure_i2s_initialized();
         i2s_audio_fill_silence(count);
@@ -209,6 +218,9 @@ void audio_dispatch_fill_silence(int count) {
         return;
     }
     hdmi_hstx_fill_silence(count);
+#elif defined(VIDEO_COMPOSITE)
+    ensure_pwm_audio_initialized();
+    pwm_audio_fill_silence(count);
 #else
     (void)count; /* PIO path: the Core 1 render_core handles underrun. */
 #endif
@@ -217,7 +229,7 @@ void audio_dispatch_fill_silence(int count) {
 /* ---- Render core (Core 1): boots audio + drains the ring ------------- */
 static volatile bool core1_ready = false;
 
-#ifndef HDMI_HSTX
+#if !defined(HDMI_HSTX) && !defined(VIDEO_COMPOSITE)
 void __time_critical_func(render_core)(void) {
     static i2s_config_t i2s_cfg;
     i2s_cfg = i2s_get_default_config();
@@ -252,7 +264,7 @@ void __time_critical_func(render_core)(void) {
         i2s_dma_write(&i2s_cfg, (const int16_t *)chunk);
     }
 }
-#endif /* !HDMI_HSTX */
+#endif /* !HDMI_HSTX && !VIDEO_COMPOSITE */
 
 /* ---- Entry point ----------------------------------------------------- */
 
@@ -370,12 +382,20 @@ int main(void) {
     usbhid_wrapper_init();
 
     /* 8. Launch audio core */
-#ifdef HDMI_HSTX
+#if defined(HDMI_HSTX)
     /* HSTX path: Core 1 is already running `video_output_core1_run` from
      * graphics_init(). Audio rides on HDMI via data-island packets pushed
      * from WriteAudio() (same model as murmnes's default HDMI audio). */
     core1_ready = true;
     printf("HDMI_HSTX: Core 1 running HSTX scanout, audio on HDMI\n");
+#elif defined(VIDEO_COMPOSITE)
+    /* Composite-TV path: Core 1 is owned by the TV driver (claimed in
+     * HDMI_tv.c's graphics_init() call above). Its 30 kHz scanline
+     * timer IRQ fills the line buffers; there's no free core for the
+     * I2S render loop, so the only audio paths available are PWM and
+     * Disabled (both handled on Core 0). */
+    core1_ready = true;
+    printf("VIDEO_COMPOSITE: Core 1 running TV scanout, audio on PWM\n");
 #else
     printf("Starting render core (audio)...\n");
     multicore_launch_core1(render_core);

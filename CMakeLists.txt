@@ -18,9 +18,17 @@ set(MSX_MODEL "3" CACHE STRING "MSX model to emulate (1, 2, or 3)")
 option(USB_HID_ENABLED "Enable USB HID host" OFF)
 
 # Video output driver selection — PIO HDMI by default; HSTX HDMI when
-# HDMI_HSTX=ON is passed (both cannot be enabled at the same time).
-# HSTX carries HDMI audio as data-island packets out of the box.
-option(HDMI_HSTX "Use the RP2350 HSTX-based HDMI driver (with HDMI audio)" OFF)
+# HDMI_HSTX=ON; composite TV when VIDEO_COMPOSITE=ON (all three are
+# mutually exclusive). HSTX carries HDMI audio as data-island packets;
+# VIDEO_COMPOSITE generates a full PAL/NTSC software composite signal
+# on the 8-bit HDMI connector (via an HDMI-to-RCA adapter or resistor
+# DAC wired to GPIO 12..19).
+option(HDMI_HSTX       "Use the RP2350 HSTX-based HDMI driver (with HDMI audio)" OFF)
+option(VIDEO_COMPOSITE "Use the software composite-TV driver"                    OFF)
+
+if(HDMI_HSTX AND VIDEO_COMPOSITE)
+    message(FATAL_ERROR "HDMI_HSTX and VIDEO_COMPOSITE are mutually exclusive")
+endif()
 
 # CPU voltage selection based on speed
 if(CPU_SPEED GREATER_EQUAL 400)
@@ -64,12 +72,15 @@ if(HDMI_HSTX)
 endif()
 
 # Video + audio + PSRAM live in a single "drivers" library. The video
-# driver source swaps depending on HDMI_HSTX: the PIO HDMI path compiles
-# HDMI.c + hdmi_scanline.S + HDMI_vga.c + test_pins.c so the PIO path can
-# autodetect VGA vs HDMI at runtime. The HSTX path compiles HDMI_hstx.c
-# and leans on the pico_hdmi/i2s subdirectories above.
+# driver source swaps depending on the selected backend:
+#   HDMI_HSTX=ON        → HDMI_hstx.c + pico_hdmi/i2s subdirectories
+#   VIDEO_COMPOSITE=ON  → HDMI_tv.c + drivers/tv (software composite)
+#   (default)           → HDMI.c + hdmi_scanline.S + HDMI_vga.c + test_pins.c
+#                         with runtime HDMI-vs-VGA autodetect
 if(HDMI_HSTX)
     set(_VIDEO_DRIVER_SRC drivers/HDMI_hstx.c)
+elseif(VIDEO_COMPOSITE)
+    set(_VIDEO_DRIVER_SRC drivers/HDMI_tv.c)
 else()
     set(_VIDEO_DRIVER_SRC
         drivers/HDMI.c
@@ -77,6 +88,36 @@ else()
         drivers/HDMI_vga.c
         drivers/test_pins.c
     )
+endif()
+
+#-----------------------------------------------------------------------------
+# Software composite-TV driver (ported verbatim from murmnes/drivers/tv/).
+# Symbols are textually renamed to tv_* via tv/tv_rename.h so they don't
+# collide with the frank-msx HDMI.h API; HDMI_tv.c wraps the tv_* symbols.
+#-----------------------------------------------------------------------------
+if(VIDEO_COMPOSITE)
+    add_library(tv_driver STATIC
+        drivers/tv/tv-software.c
+        drivers/tv/graphics.c
+    )
+    target_include_directories(tv_driver PUBLIC drivers drivers/tv)
+    target_compile_options(tv_driver PRIVATE
+        -include ${CMAKE_CURRENT_SOURCE_DIR}/drivers/tv/tv_rename.h
+        -Wno-error
+        -Wno-incompatible-pointer-types
+        -Wno-all
+    )
+    target_link_libraries(tv_driver
+        pico_stdlib
+        pico_multicore
+        hardware_dma
+        hardware_pio
+        hardware_clocks
+    )
+    if(BOARD_VARIANT STREQUAL "M2")
+        # 8-bit DAC lives on the HDMI connector (GPIO 12..19).
+        target_compile_definitions(tv_driver PUBLIC TV_BASE_PIN=12)
+    endif()
 endif()
 
 add_library(drivers
@@ -116,6 +157,11 @@ target_link_libraries(drivers
 if(HDMI_HSTX)
     target_link_libraries(drivers pico_multicore pico_hdmi i2s_audio)
     target_compile_definitions(drivers PUBLIC HDMI_HSTX=1)
+endif()
+
+if(VIDEO_COMPOSITE)
+    target_link_libraries(drivers pico_multicore tv_driver)
+    target_compile_definitions(drivers PUBLIC VIDEO_COMPOSITE=1)
 endif()
 
 #-----------------------------------------------------------------------------
@@ -185,6 +231,11 @@ if(HDMI_HSTX)
     target_compile_definitions(frank-msx PRIVATE HDMI_HSTX=1)
     target_include_directories(frank-msx PRIVATE drivers drivers/i2s)
     target_link_libraries(frank-msx i2s_audio)
+endif()
+
+if(VIDEO_COMPOSITE)
+    target_compile_definitions(frank-msx PRIVATE VIDEO_COMPOSITE=1)
+    target_link_libraries(frank-msx tv_driver)
 endif()
 
 target_compile_definitions(frank-msx PRIVATE
