@@ -1,8 +1,16 @@
 /*
  * board_config.h
  *
- * Board configuration for frank-msx — fMSX for RP2350.
- * Only the M2 layout is supported at this stage.
+ * Board configuration dispatcher for frank-msx — fMSX for RP2350.
+ *
+ * Select platform via CMake: -DPLATFORM=m1|m2|dv|pc|z0 (default m2).
+ *
+ * Supported video/audio matrix:
+ *   M2 — HDMI_HSTX, HDMI_PIO/VGA, TV          audio: HSTX / I2S / PWM
+ *   M1 — HDMI_PIO/VGA, TV                     audio: I2S / PWM
+ *   DV — HDMI_PIO/VGA                         audio: PWM
+ *   PC — HDMI_PIO/VGA                         audio: PWM
+ *   Z0 — HDMI_PIO/VGA                         audio: PWM
  */
 #ifndef BOARD_CONFIG_H
 #define BOARD_CONFIG_H
@@ -11,8 +19,43 @@
 #include "hardware/structs/sysinfo.h"
 #include "hardware/vreg.h"
 
-#if !defined(BOARD_M2)
-#define BOARD_M2
+/* ---- Platform selection ----
+ *
+ * The CMakeLists.txt already defines both PLATFORM_<VARIANT> and
+ * BOARD_<VARIANT> via target_compile_definitions, so we only ensure
+ * one of them is set when the file is pulled in from tooling without
+ * CMake's flags. Do not re-define either macro unconditionally — that
+ * triggers a redefinition warning on repeat includes. */
+#if !defined(PLATFORM_M1) && !defined(PLATFORM_M2) && \
+    !defined(PLATFORM_DV) && !defined(PLATFORM_PC) && !defined(PLATFORM_Z0)
+#  define PLATFORM_M2 1
+#endif
+
+#if defined(PLATFORM_M1)
+#  ifndef BOARD_M1
+#    define BOARD_M1 1
+#  endif
+#  include "board_m1.h"
+#elif defined(PLATFORM_DV)
+#  ifndef BOARD_DV
+#    define BOARD_DV 1
+#  endif
+#  include "board_dv.h"
+#elif defined(PLATFORM_PC)
+#  ifndef BOARD_PC
+#    define BOARD_PC 1
+#  endif
+#  include "board_pc.h"
+#elif defined(PLATFORM_Z0)
+#  ifndef BOARD_Z0
+#    define BOARD_Z0 1
+#  endif
+#  include "board_z0.h"
+#else
+#  ifndef BOARD_M2
+#    define BOARD_M2 1
+#  endif
+#  include "board_m2.h"
 #endif
 
 /* ---- Clocking defaults ---- */
@@ -39,80 +82,48 @@
 #  endif
 #endif
 
-/* ---- PSRAM pin (RP2350A vs RP2350B autodetect) ---- */
-#define PSRAM_PIN_RP2350A 8     /* M2 RP2350A variant */
-#define PSRAM_PIN_RP2350B 47    /* RP2350B always GPIO47 */
+/* ---- PSRAM pin (RP2350A vs RP2350B autodetect) ----
+ *
+ * Each board header defines PSRAM_CS_PIN_RP2350A / PSRAM_CS_PIN_RP2350B.
+ * Boards without PSRAM can set both to the same pin; the psram_init
+ * probe will fail cleanly on boards that lack the chip entirely. */
+#ifndef PSRAM_CS_PIN_RP2350A
+#  error "Board header must define PSRAM_CS_PIN_RP2350A"
+#endif
+#ifndef PSRAM_CS_PIN_RP2350B
+#  error "Board header must define PSRAM_CS_PIN_RP2350B"
+#endif
+
+/* Kept for legacy TU references that still use the shorter name. */
+#define PSRAM_PIN_RP2350A PSRAM_CS_PIN_RP2350A
+#define PSRAM_PIN_RP2350B PSRAM_CS_PIN_RP2350B
 
 static inline uint get_psram_pin(void) {
 #if PICO_RP2350
     uint32_t package_sel = *((io_ro_32*)(SYSINFO_BASE + SYSINFO_PACKAGE_SEL_OFFSET));
-    if (package_sel & 1) return PSRAM_PIN_RP2350A;
-    return PSRAM_PIN_RP2350B;
+    if (package_sel & 1) return PSRAM_CS_PIN_RP2350A;
+    return PSRAM_CS_PIN_RP2350B;
 #else
     return 0;
 #endif
 }
 
-/* ---- M2 GPIO layout ---- */
-#ifdef BOARD_M2
-
-/* HDMI */
-#define HDMI_PIN_CLKN 12
-#define HDMI_PIN_CLKP 13
-#define HDMI_PIN_D0N  14
-#define HDMI_PIN_D0P  15
-#define HDMI_PIN_D1N  16
-#define HDMI_PIN_D1P  17
-#define HDMI_PIN_D2N  18
-#define HDMI_PIN_D2P  19
-#define HDMI_BASE_PIN HDMI_PIN_CLKN
-
-/* SD Card (SPI0). Matches the pin names used by drivers/sdcard/sdcard.c.
- * These values are also passed via `target_compile_definitions` in the
- * top-level CMakeLists so the SD driver TU sees them; we keep the
- * defines here for any other translation unit that needs to reason
- * about SD wiring. */
-#ifndef SDCARD_PIN_SPI0_CS
-#define SDCARD_PIN_SPI0_CS   5
+/* ---- Optional peripherals ----
+ *
+ * HAS_PS2_MOUSE is set when the board header defined PS2_MOUSE_CLK —
+ * only M2 currently wires a second PS/2 port (keyboard on GPIO 2/3,
+ * mouse on GPIO 0/1). Boards without the second port skip the mouse
+ * PIO state machine + reset exchange entirely. */
+#ifdef PS2_MOUSE_CLK
+#  define HAS_PS2_MOUSE 1
+#else
+/* Stub pins so ps2_init(...) still gets a valid argument on boards
+ * without a mouse port — the SM is claimed but the wrapper skips
+ * ps2_mouse_init_device(), so no reset traffic is emitted and the
+ * SM just sits idle listening for bytes that never arrive. */
+#  define PS2_MOUSE_CLK  PS2_PIN_CLK
+#  define PS2_MOUSE_DATA PS2_PIN_DATA
 #endif
-#ifndef SDCARD_PIN_SPI0_SCK
-#define SDCARD_PIN_SPI0_SCK  6
-#endif
-#ifndef SDCARD_PIN_SPI0_MOSI
-#define SDCARD_PIN_SPI0_MOSI 7
-#endif
-#ifndef SDCARD_PIN_SPI0_MISO
-#define SDCARD_PIN_SPI0_MISO 4
-#endif
-
-/* PS/2 keyboard + mouse */
-#define PS2_PIN_CLK    2
-#define PS2_PIN_DATA   3
-#define PS2_MOUSE_CLK  0
-#define PS2_MOUSE_DATA 1
-
-/* NES/SNES pad (M2 layout — matches murmsnes) */
-#ifndef NESPAD_GPIO_CLK
-#define NESPAD_GPIO_CLK   20
-#endif
-#ifndef NESPAD_GPIO_LATCH
-#define NESPAD_GPIO_LATCH 21
-#endif
-#ifndef NESPAD_GPIO_DATA
-#define NESPAD_GPIO_DATA  26
-#endif
-
-/* I2S audio (external DAC) */
-#define I2S_DATA_PIN       9
-#define I2S_CLOCK_PIN_BASE 10
-
-/* PWM audio (RC low-pass filter on pins). Shares GPIO 10/11 with the
- * I2S output — only one audio backend can drive those pins at a time,
- * selected at runtime via Settings → Audio. */
-#define PWM_PIN0           10
-#define PWM_PIN1           11
-
-#endif /* BOARD_M2 */
 
 /* ---- MSX display ----
  *

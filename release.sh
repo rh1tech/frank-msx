@@ -77,7 +77,18 @@ printf '%d %02d\n' "$MAJOR" "$MINOR" > "$VERSION_FILE"
 RELEASE_DIR="$SCRIPT_DIR/release"
 mkdir -p "$RELEASE_DIR"
 
-VARIANTS=("M2")
+# Release matrix — one UF2 per (platform, video) combination that the
+# platform supports. Entries are: "<platform>:<label>:<cmake args>".
+RELEASE_TARGETS=(
+    "m2:m2-hdmi-hstx:-DHDMI_HSTX=ON"
+    "m2:m2-hdmi-pio:"
+    "m2:m2-tv:-DVIDEO_COMPOSITE=ON"
+    "m1:m1-hdmi-pio:"
+    "m1:m1-tv:-DVIDEO_COMPOSITE=ON"
+    "dv:dv-hdmi-pio:"
+    "pc:pc-hdmi-pio:"
+    "z0:z0-hdmi-pio:"
+)
 FAIL=0
 
 # Release defaults: USB HID host enabled (USB keyboard/mouse/gamepad).
@@ -90,9 +101,9 @@ else
 fi
 echo -e "USB HID host: ${CYAN}${USB_HID_CMAKE}${NC}"
 
-for VARIANT in "${VARIANTS[@]}"; do
-    VARIANT_LOWER=$(echo "$VARIANT" | tr '[:upper:]' '[:lower:]')
-    OUTPUT_NAME="frank-msx_${VARIANT_LOWER}_${VERSION}.uf2"
+for ENTRY in "${RELEASE_TARGETS[@]}"; do
+    IFS=':' read -r TGT_PLATFORM TGT_LABEL TGT_EXTRA <<< "$ENTRY"
+    OUTPUT_NAME="frank-msx_${TGT_LABEL}_${VERSION}.uf2"
 
     echo ""
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -103,22 +114,23 @@ for VARIANT in "${VARIANTS[@]}"; do
     mkdir build
     cd build
 
+    # shellcheck disable=SC2086  # intentional word-splitting of TGT_EXTRA
     cmake .. \
         -DPICO_PLATFORM=rp2350 \
-        -DPICO_BOARD=pico2 \
-        -DBOARD_VARIANT=${VARIANT} \
-        -DUSB_HID_ENABLED=${USB_HID_CMAKE} > /dev/null 2>&1
+        -DPLATFORM=${TGT_PLATFORM} \
+        -DUSB_HID_ENABLED=${USB_HID_CMAKE} \
+        ${TGT_EXTRA} > /dev/null 2>&1
 
     if make -j$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4) > /dev/null 2>&1; then
         if [[ -f "frank-msx.uf2" ]]; then
             cp "frank-msx.uf2" "$RELEASE_DIR/$OUTPUT_NAME"
-            echo -e "  ${GREEN}✓ ${VARIANT}${NC} → release/$OUTPUT_NAME"
+            echo -e "  ${GREEN}✓ ${TGT_LABEL}${NC} → release/$OUTPUT_NAME"
         else
-            echo -e "  ${RED}✗ ${VARIANT} UF2 not found${NC}"
+            echo -e "  ${RED}✗ ${TGT_LABEL} UF2 not found${NC}"
             FAIL=1
         fi
     else
-        echo -e "  ${RED}✗ ${VARIANT} build failed${NC}"
+        echo -e "  ${RED}✗ ${TGT_LABEL} build failed${NC}"
         FAIL=1
     fi
 

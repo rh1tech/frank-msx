@@ -257,8 +257,12 @@ void ps2kbd_init(void) {
     // not using hardware SPI (we use hardware SPI here).
     ps2_init(pio1, PS2_PIN_CLK, PS2_MOUSE_CLK);
 
-    // Initialize mouse device
+    // Only boards with a physical second PS/2 port attempt the mouse
+    // reset handshake — otherwise the init wastes three timeouts
+    // talking to nothing and floods the log with failures.
+#ifdef HAS_PS2_MOUSE
     ps2_mouse_init_device();
+#endif
 
     queue_head = 0;
     queue_tail = 0;

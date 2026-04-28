@@ -3,6 +3,7 @@
  */
 
 #include "msx_settings.h"
+#include "board_config.h"   /* brings in HAS_I2S / HAS_PWM / platform defines */
 #include "MSX.h"
 #include "HDMI.h"
 
@@ -18,10 +19,12 @@ msx_settings_t g_settings = {
     .joy2      = 1,                 /* Joystick */
     .scanlines = MSX_SCAN_OFF,
     .color     = MSX_COLOR_NORMAL,
-#ifdef HDMI_HSTX
+#if defined(HDMI_HSTX)
     .audio_mode = MSX_AUDIO_HDMI,   /* HSTX ships with HDMI audio out */
-#else
+#elif defined(HAS_I2S)
     .audio_mode = MSX_AUDIO_I2S,    /* PIO HDMI can't carry audio */
+#else
+    .audio_mode = MSX_AUDIO_PWM,    /* PWM-only boards (DV / PC / Z0) */
 #endif
 };
 
@@ -69,16 +72,23 @@ static const char *AUDIO_LABELS[MSX_AUDIO_COUNT] = {
     "Disabled",
 };
 
-/* On HSTX builds the full cycle HDMI → I2S → PWM → Disabled is
- * available. On PIO builds HDMI audio has no carrier, so HDMI is
- * removed from the cycle (I2S → PWM → Disabled). */
-#ifdef HDMI_HSTX
+/* The audio cycle advertised to the Settings UI depends on the board:
+ *   HSTX builds (M2)                 HDMI → I2S → PWM → Disabled
+ *   PIO HDMI build with I2S DAC      I2S → PWM → Disabled    (M1, M2)
+ *   PIO HDMI build without I2S DAC   PWM → Disabled          (DV / PC / Z0)
+ * The underlying dispatcher in main.c collapses disallowed modes onto
+ * the right backend for the current platform. */
+#if defined(HDMI_HSTX)
 static const uint8_t AUDIO_CYCLE[] = {
     MSX_AUDIO_HDMI, MSX_AUDIO_I2S, MSX_AUDIO_PWM, MSX_AUDIO_DISABLED,
 };
-#else
+#elif defined(HAS_I2S)
 static const uint8_t AUDIO_CYCLE[] = {
     MSX_AUDIO_I2S, MSX_AUDIO_PWM, MSX_AUDIO_DISABLED,
+};
+#else
+static const uint8_t AUDIO_CYCLE[] = {
+    MSX_AUDIO_PWM, MSX_AUDIO_DISABLED,
 };
 #endif
 #define AUDIO_CYCLE_LEN ((int)(sizeof(AUDIO_CYCLE) / sizeof(AUDIO_CYCLE[0])))

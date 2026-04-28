@@ -1,22 +1,63 @@
 cmake_minimum_required(VERSION 3.13)
 
-# Target: Raspberry Pi Pico 2 (RP2350)
-set(PICO_BOARD pico2 CACHE STRING "Pico board type")
+# -----------------------------------------------------------------------------
+# Platform selection
+# -----------------------------------------------------------------------------
+# Supported platforms (matches murmnes):
+#   M2 — Murmulator 2.0                 HDMI_HSTX / HDMI_PIO / VGA / TV
+#   M1 — Murmulator 1.x                 HDMI_PIO / VGA / TV
+#   DV — Pimoroni Pico DV Demo          HDMI_PIO / VGA
+#   PC — Olimex RP2040-PICO-PC          HDMI_PIO / VGA
+#   Z0 — Waveshare RP2350-PiZero        HDMI_PIO / VGA
+#
+# Select with -DPLATFORM=m1|m2|dv|pc|z0 (default m2).
+# BOARD_VARIANT is kept as a legacy alias for the same choice.
+set(PLATFORM       "m2" CACHE STRING "Target platform: m1, m2, dv, pc, z0")
+set_property(CACHE PLATFORM PROPERTY STRINGS m1 m2 dv pc z0)
 
-# Board variant — only M2 is supported right now.
-set(BOARD_VARIANT "M2" CACHE STRING "Board variant (M2 only for now)")
+# Allow BOARD_VARIANT (uppercase) as a back-compat alias.
+if(DEFINED BOARD_VARIANT)
+    string(TOLOWER "${BOARD_VARIANT}" _board_variant_lower)
+    if(_board_variant_lower MATCHES "^(m1|m2|dv|pc|z0)$")
+        set(PLATFORM "${_board_variant_lower}" CACHE STRING "" FORCE)
+    endif()
+endif()
 
-# Video output driver selection — PIO HDMI by default; HSTX HDMI when
-# HDMI_HSTX=ON; composite TV when VIDEO_COMPOSITE=ON (all three are
-# mutually exclusive). HSTX carries HDMI audio as data-island packets;
-# VIDEO_COMPOSITE generates a full PAL/NTSC software composite signal
-# on the 8-bit HDMI connector (via an HDMI-to-RCA adapter or resistor
-# DAC wired to GPIO 12..19).
+string(TOUPPER "${PLATFORM}" BOARD_VARIANT)
+
+# Z0 needs a non-standard Pico board header so the SDK configures the
+# right flash, default pins, and RP2350B package detection. All other
+# platforms use the stock pico2 definition.
+if(PLATFORM STREQUAL "z0")
+    set(PICO_BOARD_HEADER_DIRS ${CMAKE_CURRENT_LIST_DIR}/src/boards CACHE PATH "" FORCE)
+    set(PICO_BOARD "waveshare_rp2350_pizero" CACHE STRING "Pico board type" FORCE)
+else()
+    set(PICO_BOARD "pico2" CACHE STRING "Pico board type")
+endif()
+
+# -----------------------------------------------------------------------------
+# Video output driver selection
+# -----------------------------------------------------------------------------
+# Driver options (mutually exclusive):
+#   HDMI_HSTX        RP2350 HSTX HDMI (with HDMI audio via data islands)
+#   VIDEO_COMPOSITE  Software composite TV (PAL/NTSC) on HDMI DAC pins
+#   (default)        PIO HDMI + runtime VGA autodetect
+#
+# The matrix below validates the user's choice against the platform —
+# HDMI_HSTX is M2-only, VIDEO_COMPOSITE is M1/M2-only.
 option(HDMI_HSTX       "Use the RP2350 HSTX-based HDMI driver (with HDMI audio)" OFF)
 option(VIDEO_COMPOSITE "Use the software composite-TV driver"                    OFF)
 
 if(HDMI_HSTX AND VIDEO_COMPOSITE)
     message(FATAL_ERROR "HDMI_HSTX and VIDEO_COMPOSITE are mutually exclusive")
+endif()
+
+if(HDMI_HSTX AND NOT PLATFORM STREQUAL "m2")
+    message(FATAL_ERROR "HDMI_HSTX is only supported on the M2 platform (got '${PLATFORM}')")
+endif()
+
+if(VIDEO_COMPOSITE AND NOT (PLATFORM STREQUAL "m2" OR PLATFORM STREQUAL "m1"))
+    message(FATAL_ERROR "VIDEO_COMPOSITE (composite TV) is only supported on M1/M2 (got '${PLATFORM}')")
 endif()
 
 # CPU / PSRAM / FLASH clocking (MHz). Defaults chosen for reliability.
@@ -50,7 +91,7 @@ else()
     set(CPU_VOLTAGE "VREG_VOLTAGE_1_50")
 endif()
 
-message(STATUS "Board: ${BOARD_VARIANT}  CPU: ${CPU_SPEED} MHz  PSRAM: ${PSRAM_SPEED} MHz  Flash: ${FLASH_SPEED} MHz  Voltage: ${CPU_VOLTAGE}")
+message(STATUS "Platform: ${PLATFORM}  CPU: ${CPU_SPEED} MHz  PSRAM: ${PSRAM_SPEED} MHz  Flash: ${FLASH_SPEED} MHz  Voltage: ${CPU_VOLTAGE}")
 
 include(pico_sdk_import.cmake)
 
@@ -153,10 +194,25 @@ if(VIDEO_COMPOSITE)
         hardware_pio
         hardware_clocks
     )
-    if(BOARD_VARIANT STREQUAL "M2")
-        # 8-bit DAC lives on the HDMI connector (GPIO 12..19).
+    if(PLATFORM STREQUAL "m2")
         target_compile_definitions(tv_driver PUBLIC TV_BASE_PIN=12)
+    elseif(PLATFORM STREQUAL "m1")
+        target_compile_definitions(tv_driver PUBLIC TV_BASE_PIN=6)
     endif()
+    # Pass the platform macro to the TV driver so its (tiny) pin-base
+    # path can key off the same compile flag other drivers use.
+    target_compile_definitions(tv_driver PUBLIC PLATFORM_${BOARD_VARIANT}=1)
+endif()
+
+# I2S audio source is only compiled on platforms with an I2S DAC wired up.
+# PWM-only boards (DV / PC / Z0) skip it entirely — the pins the driver
+# references aren't defined by their board headers.
+set(_AUDIO_I2S_SRC)
+if(PLATFORM STREQUAL "m1" OR PLATFORM STREQUAL "m2")
+    list(APPEND _AUDIO_I2S_SRC
+        drivers/audio.c
+        drivers/audio_i2s_opt.S
+    )
 endif()
 
 add_library(drivers
@@ -164,8 +220,7 @@ add_library(drivers
     drivers/psram_init.c
     drivers/psram_allocator.c
     drivers/dlmalloc.c
-    drivers/audio.c
-    drivers/audio_i2s_opt.S
+    ${_AUDIO_I2S_SRC}
     drivers/pwm_audio/pwm_audio.c
     drivers/uart_logging.c
 )
@@ -176,8 +231,14 @@ set_source_files_properties(drivers/dlmalloc.c PROPERTIES COMPILE_DEFINITIONS
     "ONLY_MSPACES=1;HAVE_MMAP=0;HAVE_MORECORE=0;NO_MALLOC_STATS=1;USE_LOCKS=0;ABORT_ON_ASSERT_FAILURE=0;MALLOC_FAILURE_ACTION=;LACKS_SYS_MMAN_H=1;LACKS_UNISTD_H=1;LACKS_SYS_PARAM_H=1")
 
 target_include_directories(drivers PUBLIC drivers drivers/pwm_audio src)
-target_compile_definitions(drivers PRIVATE
+# Platform macro must be PUBLIC so HDMI.h (which is included from other
+# libraries via the drivers target) picks up PLATFORM_Z0 / PLATFORM_M1
+# when gating pin-ordering inside the header itself.
+target_compile_definitions(drivers PUBLIC
     BOARD_${BOARD_VARIANT}
+    PLATFORM_${BOARD_VARIANT}=1
+)
+target_compile_definitions(drivers PRIVATE
     PSRAM_MAX_FREQ_MHZ=${PSRAM_SPEED}
 )
 pico_generate_pio_header(drivers ${CMAKE_CURRENT_LIST_DIR}/drivers/audio_i2s.pio)
@@ -299,17 +360,78 @@ target_compile_definitions(frank-msx PRIVATE
     FRANK_MSX_SOFT_LIMITER=1      # 4:1 soft-knee limiter in place of hard int16 clamp
 )
 
-# Peripheral pins per board variant (must match driver expectations).
-# Pin values copied verbatim from murmsnes CMakeLists to stay in lockstep.
-if(BOARD_VARIANT STREQUAL "M2")
+# Peripheral pins per platform — these get compiled into the standalone
+# sdcard / nespad / ps2 drivers, which do NOT include board_config.h and
+# therefore need the pins as -D flags at compile time.
+#
+# Pin values mirror murmnes/src/platform/pico/board_*.h so both projects
+# stay in lockstep.
+if(PLATFORM STREQUAL "m2")
+    set(_SD_SCK 6)
+    set(_SD_MOSI 7)
+    set(_SD_MISO 4)
+    set(_SD_CS 5)
+    set(_NES_CLK 20)
+    set(_NES_LATCH 21)
+    set(_NES_DATA 26)
+elseif(PLATFORM STREQUAL "m1")
+    set(_SD_SCK 2)
+    set(_SD_MOSI 3)
+    set(_SD_MISO 4)
+    set(_SD_CS 5)
+    set(_NES_CLK 14)
+    set(_NES_LATCH 15)
+    set(_NES_DATA 16)
+elseif(PLATFORM STREQUAL "dv")
+    # SCK=5 can't map to hardware SPI — forced onto PIO-SPI below.
+    set(_SD_SCK 5)
+    set(_SD_MOSI 18)
+    set(_SD_MISO 19)
+    set(_SD_CS 22)
+    set(_NES_CLK 14)
+    set(_NES_LATCH 15)
+    set(_NES_DATA 20)
+elseif(PLATFORM STREQUAL "pc")
+    set(_SD_SCK 6)
+    set(_SD_MOSI 7)
+    set(_SD_MISO 4)
+    set(_SD_CS 22)
+    set(_NES_CLK 5)
+    set(_NES_LATCH 9)
+    set(_NES_DATA 20)
+elseif(PLATFORM STREQUAL "z0")
+    # Pins above 29 can't use SPI0 — hardware SPI1 is required.
+    set(_SD_SCK 30)
+    set(_SD_MOSI 31)
+    set(_SD_MISO 40)
+    set(_SD_CS 43)
+    set(_NES_CLK 4)
+    set(_NES_LATCH 5)
+    set(_NES_DATA 7)
+endif()
+
+target_compile_definitions(frank-msx PRIVATE
+    SDCARD_PIN_SPI0_CS=${_SD_CS}
+    SDCARD_PIN_SPI0_SCK=${_SD_SCK}
+    SDCARD_PIN_SPI0_MOSI=${_SD_MOSI}
+    SDCARD_PIN_SPI0_MISO=${_SD_MISO}
+    NESPAD_GPIO_CLK=${_NES_CLK}
+    NESPAD_GPIO_LATCH=${_NES_LATCH}
+    NESPAD_GPIO_DATA=${_NES_DATA}
+)
+
+# Z0 wires SD card to hardware SPI1 (pins above 29 aren't on SPI0).
+if(PLATFORM STREQUAL "z0")
+    target_compile_definitions(frank-msx PRIVATE SDCARD_SPI_BUS=spi1)
+endif()
+
+# Pimoroni Pico DV Demo: SCK=5 can't map to a single HW SPI peripheral,
+# so SD goes through PIO-SPI on pio1/SM3 (pio0 = HDMI, pio1 SM0..SM2
+# already taken by audio/nespad/ps2 in init order).
+if(PLATFORM STREQUAL "dv")
     target_compile_definitions(frank-msx PRIVATE
-        SDCARD_PIN_SPI0_CS=5
-        SDCARD_PIN_SPI0_SCK=6
-        SDCARD_PIN_SPI0_MOSI=7
-        SDCARD_PIN_SPI0_MISO=4
-        NESPAD_GPIO_CLK=20
-        NESPAD_GPIO_LATCH=21
-        NESPAD_GPIO_DATA=26
+        SDCARD_PIO=pio1
+        SDCARD_PIO_SM=3
     )
 endif()
 

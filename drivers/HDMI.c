@@ -495,7 +495,15 @@ static inline bool hdmi_init() {
 
     //выключение SM основной и конвертора
 
-#if ZERO2
+    /* The RP2350 PIO GPIO base must be bumped to 16 or 32 when the HDMI
+     * data lanes straddle or exceed GPIO 16 / 32 — the default base is 0
+     * and the PIO can only address a 32-pin window from it. This
+     * replaces the old ZERO2 gate so every platform picks up the right
+     * base automatically. */
+#if HDMI_BASE_PIN >= 32
+    pio_set_gpio_base(PIO_VIDEO, 32);
+    pio_set_gpio_base(PIO_VIDEO_ADDR, 32);
+#elif HDMI_BASE_PIN >= 16
     pio_set_gpio_base(PIO_VIDEO, 16);
     pio_set_gpio_base(PIO_VIDEO_ADDR, 16);
 #endif
@@ -565,19 +573,18 @@ static inline bool hdmi_init() {
         gpio_set_slew_rate(beginHDMI_PIN_clk + i, GPIO_SLEW_RATE_FAST);
     }
 
-#if ZERO2
-    // Настройка направлений пинов для state machines
+    /* When the HDMI pins live above GPIO 31 (Z0 uses GPIO 32..39) the
+     * 32-bit mask helpers can't express them — fall back to mask64. */
+#if HDMI_BASE_PIN >= 32 || beginHDMI_PIN_clk >= 32
     pio_sm_set_consecutive_pindirs(PIO_VIDEO, SM_video, HDMI_BASE_PIN, 8, true);
     pio_sm_set_consecutive_pindirs(PIO_VIDEO_ADDR, SM_conv, HDMI_BASE_PIN, 8, true);
 
-    uint64_t mask64 = (uint64_t)(3u << beginHDMI_PIN_clk);
+    uint64_t mask64 = (uint64_t)(3u) << beginHDMI_PIN_clk;
     pio_sm_set_pins_with_mask64(PIO_VIDEO, SM_video, mask64, mask64);
     pio_sm_set_pindirs_with_mask64(PIO_VIDEO, SM_video, mask64, mask64);
-    // пины
 #else
     pio_sm_set_pins_with_mask(PIO_VIDEO, SM_video, 3u << beginHDMI_PIN_clk, 3u << beginHDMI_PIN_clk);
     pio_sm_set_pindirs_with_mask(PIO_VIDEO, SM_video, 3u << beginHDMI_PIN_clk, 3u << beginHDMI_PIN_clk);
-    // пины
 #endif
 
     for (int i = 0; i < 6; i++) {

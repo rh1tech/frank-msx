@@ -28,8 +28,11 @@
 /* TV path: Core 1 is owned by the scanline timer, so the ring-fed I2S
  * render loop is never started. audio.h isn't included at all — we
  * don't want to accidentally reference its helpers. */
-#else
+#elif defined(HAS_I2S)
 #include "audio.h"
+#else
+/* Boards without an I2S DAC (DV / PC / Z0) fall back to PWM-only audio
+ * on the PIO HDMI/VGA path. The ping-pong I2S render core never runs. */
 #endif
 #include "pwm_audio.h"
 #include "ff.h"
@@ -187,10 +190,16 @@ void audio_dispatch_push_samples(const int16_t *buf, int count) {
      * render core and no HDMI audio path. Everything falls back to PWM. */
     ensure_pwm_audio_initialized();
     pwm_audio_push_samples(buf, count);
-#else
-    /* PIO HDMI build: HDMI audio is not available, so HDMI mode
-     * collapses onto the I2S ring path. I2S mode is the same path. */
+#elif defined(HAS_I2S)
+    /* PIO HDMI build with an I2S DAC on the board: HDMI audio is not
+     * available, so HDMI mode collapses onto the I2S ring path. I2S
+     * mode is the same path. */
     (void)audio_ring_push_mono(buf, (unsigned)count);
+#else
+    /* PIO HDMI build on a PWM-only board (DV / PC / Z0): always route
+     * through PWM regardless of which audio mode the user picked. */
+    ensure_pwm_audio_initialized();
+    pwm_audio_push_samples(buf, count);
 #endif
 }
 
@@ -221,15 +230,18 @@ void audio_dispatch_fill_silence(int count) {
 #elif defined(VIDEO_COMPOSITE)
     ensure_pwm_audio_initialized();
     pwm_audio_fill_silence(count);
-#else
+#elif defined(HAS_I2S)
     (void)count; /* PIO path: the Core 1 render_core handles underrun. */
+#else
+    ensure_pwm_audio_initialized();
+    pwm_audio_fill_silence(count);
 #endif
 }
 
 /* ---- Render core (Core 1): boots audio + drains the ring ------------- */
 static volatile bool core1_ready = false;
 
-#if !defined(HDMI_HSTX) && !defined(VIDEO_COMPOSITE)
+#if !defined(HDMI_HSTX) && !defined(VIDEO_COMPOSITE) && defined(HAS_I2S)
 void __time_critical_func(render_core)(void) {
     static i2s_config_t i2s_cfg;
     i2s_cfg = i2s_get_default_config();
@@ -301,9 +313,21 @@ int main(void) {
      * sleep so even cold-plugged hosts get the boot banner. */
     for (int i = 0; i < 10; ++i) sleep_ms(500);
 
+    /* Map the platform macro to a short human-readable label. */
+#if defined(BOARD_M1)
+    const char *board_name = "M1";
+#elif defined(BOARD_DV)
+    const char *board_name = "DV";
+#elif defined(BOARD_PC)
+    const char *board_name = "PC";
+#elif defined(BOARD_Z0)
+    const char *board_name = "Z0";
+#else
+    const char *board_name = "M2";
+#endif
     printf("\n========================================\n");
     printf("  frank-msx — fMSX for RP2350\n");
-    printf("  version %s  board M2\n", FRANK_MSX_VERSION);
+    printf("  version %s  board %s\n", FRANK_MSX_VERSION, board_name);
     printf("  cpu=%lu MHz psram=%d MHz flash=%d MHz\n",
            clock_get_hz(clk_sys) / 1000000u,
            PSRAM_MAX_FREQ_MHZ, FLASH_MAX_FREQ_MHZ);
@@ -396,11 +420,16 @@ int main(void) {
      * Disabled (both handled on Core 0). */
     core1_ready = true;
     printf("VIDEO_COMPOSITE: Core 1 running TV scanout, audio on PWM\n");
-#else
+#elif defined(HAS_I2S)
     printf("Starting render core (audio)...\n");
     multicore_launch_core1(render_core);
     while (!core1_ready) tight_loop_contents();
     printf("Render core ready\n");
+#else
+    /* PWM-only platforms (DV / PC / Z0): no render core — PWM audio is
+     * filled directly on Core 0 from audio_dispatch_push_samples. */
+    core1_ready = true;
+    printf("PWM audio only — no render core launched\n");
 #endif
 
 #ifdef PICO_DEFAULT_LED_PIN

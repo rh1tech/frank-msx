@@ -393,7 +393,9 @@ static void graphics_init_vga(void) {
         pallette[i] = c & 0x3f | 0xc0;
     }
 
-#if VGA_BASE_PIN >= 16
+#if VGA_BASE_PIN >= 32
+    pio_set_gpio_base(PIO_VGA, 32);
+#elif VGA_BASE_PIN >= 16
     pio_set_gpio_base(PIO_VGA, 16);
 #endif
 

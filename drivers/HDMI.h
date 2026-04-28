@@ -12,13 +12,6 @@
 #define HDMI_BASE_PIN (6)
 #endif
 
-#define HDMI_PIN_RGB_notBGR (1)
-#define HDMI_PIN_invert_diffpairs (1)
-
-#ifndef HDMI_BASE_PIN
-#define HDMI_BASE_PIN (6)
-#endif
-
 #ifndef PIO_VIDEO
 #define PIO_VIDEO pio0
 #endif
@@ -26,12 +19,28 @@
 #define PIO_VIDEO_ADDR pio0
 #endif
 
-#ifndef beginHDMI_PIN_data
-#define beginHDMI_PIN_data (HDMI_BASE_PIN+2)
-#endif
-
-#ifndef beginHDMI_PIN_clk
-#define beginHDMI_PIN_clk (HDMI_BASE_PIN)
+/* Waveshare RP2350-PiZero (Z0) wires the HDMI connector data-lanes-first
+ * with non-inverted diff pairs and BGR channel order; every other board
+ * we support wires clock-first / inverted / RGB. Key off PLATFORM_Z0 so
+ * the PIO HDMI driver picks up the right layout automatically. */
+#ifdef PLATFORM_Z0
+#  define HDMI_PIN_RGB_notBGR       (0)
+#  define HDMI_PIN_invert_diffpairs (0)
+#  ifndef beginHDMI_PIN_data
+#  define beginHDMI_PIN_data (HDMI_BASE_PIN)
+#  endif
+#  ifndef beginHDMI_PIN_clk
+#  define beginHDMI_PIN_clk  (HDMI_BASE_PIN + 6)
+#  endif
+#else
+#  define HDMI_PIN_RGB_notBGR       (1)
+#  define HDMI_PIN_invert_diffpairs (1)
+#  ifndef beginHDMI_PIN_data
+#  define beginHDMI_PIN_data (HDMI_BASE_PIN + 2)
+#  endif
+#  ifndef beginHDMI_PIN_clk
+#  define beginHDMI_PIN_clk  (HDMI_BASE_PIN)
+#  endif
 #endif
 
 
