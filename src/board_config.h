@@ -29,10 +29,11 @@
 #endif
 
 #ifndef CPU_VOLTAGE
-#  if CPU_CLOCK_MHZ >= 400
-#    define CPU_VOLTAGE VREG_VOLTAGE_1_60
+/* RP2350 vreg exposes 1.50 → 1.60 → 1.65 → 1.70 V steps; no 1.55 V. */
+#  if CPU_CLOCK_MHZ >= 504
+#    define CPU_VOLTAGE VREG_VOLTAGE_1_65
 #  elif CPU_CLOCK_MHZ >= 300
-#    define CPU_VOLTAGE VREG_VOLTAGE_1_55
+#    define CPU_VOLTAGE VREG_VOLTAGE_1_60
 #  else
 #    define CPU_VOLTAGE VREG_VOLTAGE_1_50
 #  endif

@@ -6,17 +6,6 @@ set(PICO_BOARD pico2 CACHE STRING "Pico board type")
 # Board variant — only M2 is supported right now.
 set(BOARD_VARIANT "M2" CACHE STRING "Board variant (M2 only for now)")
 
-# CPU / PSRAM / FLASH clocking (MHz). Defaults chosen for reliability.
-set(CPU_SPEED   "252" CACHE STRING "CPU clock in MHz")
-set(PSRAM_SPEED "133" CACHE STRING "PSRAM max frequency in MHz")
-set(FLASH_SPEED "66"  CACHE STRING "Flash target max frequency in MHz")
-
-# MSX model: 1 = MSX1, 2 = MSX2, 3 = MSX2+
-set(MSX_MODEL "3" CACHE STRING "MSX model to emulate (1, 2, or 3)")
-
-# Optional USB HID host (disabled by default since we focus on PS/2)
-option(USB_HID_ENABLED "Enable USB HID host" OFF)
-
 # Video output driver selection — PIO HDMI by default; HSTX HDMI when
 # HDMI_HSTX=ON; composite TV when VIDEO_COMPOSITE=ON (all three are
 # mutually exclusive). HSTX carries HDMI audio as data-island packets;
@@ -30,11 +19,33 @@ if(HDMI_HSTX AND VIDEO_COMPOSITE)
     message(FATAL_ERROR "HDMI_HSTX and VIDEO_COMPOSITE are mutually exclusive")
 endif()
 
-# CPU voltage selection based on speed
-if(CPU_SPEED GREATER_EQUAL 400)
-    set(CPU_VOLTAGE "VREG_VOLTAGE_1_60")
+# CPU / PSRAM / FLASH clocking (MHz). Defaults chosen for reliability.
+# Composite-TV needs ~378 MHz: the TV scanline callback fires via a
+# flash-resident alarm-pool dispatcher at 30 kHz, and at 252 MHz the
+# dispatch overhead alone consumes most of each ~32 µs window — fMSX
+# drops to ~1% speed. HDMI and VGA use direct DMA IRQs (pure SRAM path)
+# so they run fine at 252 MHz. This matches murmnes's TV default.
+if(VIDEO_COMPOSITE)
+    set(_CPU_SPEED_DEFAULT "378")
+else()
+    set(_CPU_SPEED_DEFAULT "252")
+endif()
+set(CPU_SPEED "${_CPU_SPEED_DEFAULT}" CACHE STRING "CPU clock in MHz")
+set(PSRAM_SPEED "133" CACHE STRING "PSRAM max frequency in MHz")
+set(FLASH_SPEED "66"  CACHE STRING "Flash target max frequency in MHz")
+
+# MSX model: 1 = MSX1, 2 = MSX2, 3 = MSX2+
+set(MSX_MODEL "3" CACHE STRING "MSX model to emulate (1, 2, or 3)")
+
+# Optional USB HID host (disabled by default since we focus on PS/2)
+option(USB_HID_ENABLED "Enable USB HID host" OFF)
+
+# CPU voltage selection based on speed. The RP2350 vreg only exposes
+# 1.50 V → 1.60 V → 1.65 V → 1.70 V steps (no 1.55 V).
+if(CPU_SPEED GREATER_EQUAL 504)
+    set(CPU_VOLTAGE "VREG_VOLTAGE_1_65")
 elseif(CPU_SPEED GREATER_EQUAL 300)
-    set(CPU_VOLTAGE "VREG_VOLTAGE_1_55")
+    set(CPU_VOLTAGE "VREG_VOLTAGE_1_60")
 else()
     set(CPU_VOLTAGE "VREG_VOLTAGE_1_50")
 endif()

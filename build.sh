@@ -21,10 +21,9 @@ mkdir build
 cd build
 
 BOARD_VARIANT="${1:-M2}"
-: "${CPU_SPEED:=${2:-252}}"
 : "${PSRAM_SPEED:=${3:-133}}"
 : "${FLASH_SPEED:=${4:-66}}"
-: "${MSX_MODEL:=${5:-3}}"   # 1 = MSX1, 2 = MSX2, 3 = MSX2+ (default)
+: "${MSX_MODEL:=${5:-3}}"      # 1 = MSX1, 2 = MSX2, 3 = MSX2+ (default)
 : "${USB_HID:=0}"              # 0 = off (dev), 1 = on (release)
 : "${HDMI_HSTX:=0}"            # 0 = PIO HDMI (default), 1 = HSTX HDMI+audio
 : "${VIDEO_COMPOSITE:=0}"      # 0 = HDMI/VGA (default), 1 = composite TV
@@ -43,6 +42,19 @@ VIDEO_COMPOSITE_CMAKE=$(to_onoff "$VIDEO_COMPOSITE")
 if [[ "$HDMI_HSTX_CMAKE" == "ON" && "$VIDEO_COMPOSITE_CMAKE" == "ON" ]]; then
     echo "ERROR: HDMI_HSTX=1 and VIDEO_COMPOSITE=1 are mutually exclusive." >&2
     exit 1
+fi
+
+# CPU speed: composite-TV defaults to 378 MHz (the scanline alarm path
+# needs the extra headroom), everything else runs fine at 252 MHz.
+# Override with CPU_SPEED env var or positional arg $2.
+if [[ -z "${CPU_SPEED:-}" && -z "${2:-}" ]]; then
+    if [[ "$VIDEO_COMPOSITE_CMAKE" == "ON" ]]; then
+        CPU_SPEED=378
+    else
+        CPU_SPEED=252
+    fi
+else
+    : "${CPU_SPEED:=${2:-252}}"
 fi
 
 cmake \
