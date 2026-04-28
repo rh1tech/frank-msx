@@ -321,6 +321,14 @@ unsigned int usbhid_wrapper_get_joystick(void) {
     return mask;
 }
 
+unsigned int usbhid_wrapper_get_joystick_idx(int idx) {
+    if (!s_initialized || idx < 0 || idx > 1) return 0;
+    if (!usbhid_gamepad_connected_idx(idx)) return 0;
+    usbhid_gamepad_state_t gp;
+    usbhid_get_gamepad_state_idx(idx, &gp);
+    return gamepad_to_btn_mask(&gp);
+}
+
 unsigned int usbhid_wrapper_get_mouse(int port) {
     /* Only port 0 is wired to the USB mouse; port 1 stays idle unless
      * the user plugs a second mouse (not currently supported). */

@@ -83,4 +83,16 @@ int msx_create_blank_disk(msx_target_t target);
  * `SAVE_<counter>.{dsk,fdi}` is used. */
 int msx_save_disk(msx_target_t target, int fmt);
 
+/* If drive N (0=A, 1=B) has been written to since mount, overwrite
+ * the originally-mounted file on SD with the current image. Called
+ * by the eject action and by TrashMachine. No-op if the drive is
+ * clean or was never mounted from a real path. Returns 0 on success,
+ * <0 on failure, +1 if there was nothing to flush. */
+int msx_disk_flush_if_dirty(int drv);
+
+/* Mount a cartridge file with a specific fMSX mapper ID (MAP_* enum
+ * from MSX.h, or MAP_GUESS). Behaves like msx_mount_entry on success. */
+int msx_mount_entry_with_mapper(int idx, msx_target_t target, int mapper,
+                                bool reset_after_cart);
+
 #endif /* MSX_LOADER_H */

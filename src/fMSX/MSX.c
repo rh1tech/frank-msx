@@ -544,9 +544,17 @@ int StartMSX(int NewMode,int NewRAMPages,int NewVRAMPages)
     if((J<MAXSLOTS)&&LoadCart("PAINTER.ROM",J,0)) ++J;
   }
 
-  /* Load FMPAC cartridge */
-  for(;(J<MAXSLOTS)&&ROMData[J];++J);
-  if((J<MAXSLOTS)&&LoadCart("FMPAC.ROM",J,MAP_FMPAC)) ++J;
+  /* Load FMPAC cartridge.
+   *
+   * Exposed via the frank-msx Settings dialog — some users run without
+   * MSX-MUSIC hardware (and don't have FMPAC.ROM), so gate the load
+   * on a runtime flag. Provide a weak default so the core still
+   * compiles standalone (flag=1 => try, = upstream behavior). */
+  {
+    extern int fmsx_fmpac_enabled(void);
+    for(;(J<MAXSLOTS)&&ROMData[J];++J);
+    if(fmsx_fmpac_enabled() && (J<MAXSLOTS) && LoadCart("FMPAC.ROM",J,MAP_FMPAC)) ++J;
+  }
 
   /* Load Konami GameMaster2/GameMaster cartridges */
   for(;(J<MAXSLOTS)&&ROMData[J];++J);

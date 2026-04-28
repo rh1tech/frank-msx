@@ -302,6 +302,7 @@ set(PICO_PORT
     src/Pico/msx_loader.c
     src/Pico/msx_ui.c
     src/Pico/msx_settings.c
+    src/Pico/msx_state.c
 )
 
 add_executable(frank-msx

@@ -22,6 +22,14 @@
 void SSlot(byte Value); /* Used to switch secondary slots */
 void PSlot(byte Value); /* Used to switch primary slots   */
 
+/* Dirty-tracking hook implemented by the Pico port. Optional — if the
+ * symbol isn't linked in (standalone fMSX build, tests) the weak stub
+ * below is a no-op. When the MSX writes to a floppy we raise the dirty
+ * flag so msx_disk_flush_if_dirty() can persist the image on eject /
+ * power-down. */
+void msx_disk_mark_dirty(byte drive);
+__attribute__((weak)) void msx_disk_mark_dirty(byte drive) { (void)drive; }
+
 /** DiskPresent() ********************************************/
 /** Return 1 if disk drive with a given ID is present.      **/
 /*************************************************************/
@@ -63,7 +71,7 @@ byte DiskWrite(byte ID,const byte *Buf,int N)
     /* Get data pointer to requested sector */
     P = LinearFDI(&FDD[ID],N);
     /* If seek operation succeeded, write sector */
-    if(P) memcpy(P,Buf,FDD[ID].SecSize);
+    if(P) { memcpy(P,Buf,FDD[ID].SecSize); msx_disk_mark_dirty(ID); }
     /* Done */
     return(!!P);
   }

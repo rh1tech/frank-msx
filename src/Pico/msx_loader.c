@@ -183,6 +183,32 @@ static char g_disk_paths[2][MSX_MAX_PATH_LEN + MSX_MAX_FILENAME_LEN + 2];
 static bool g_cart_loaded[2] = { false, false };
 static bool g_disk_loaded[2] = { false, false };
 
+/* Dirty flags driven by Patch.c / WD1793.c. Raised on any sector
+ * write, cleared by flush/eject. */
+static volatile bool g_disk_dirty[2] = { false, false };
+
+/* Called from Patch.c:DiskWrite and WD1793.c write path.
+ * Hot path: just set a flag. */
+void msx_disk_mark_dirty(unsigned char drive) {
+    if (drive < 2) g_disk_dirty[drive] = true;
+}
+
+int msx_disk_flush_if_dirty(int drv) {
+    if (drv < 0 || drv > 1) return -1;
+    if (!g_disk_dirty[drv]) return 1;  /* nothing to do */
+    if (!g_disk_loaded[drv]) return -2;
+    const char *path = g_disk_paths[drv];
+    if (!path || !path[0]) return -3;
+    printf("disk: flushing drive %c -> %s\n", 'A' + drv, path);
+    int r = SaveFDI(&FDD[drv], path, FMT_MSXDSK);
+    /* SaveFDI: 0=failed, 1=truncated, 2=padded, 3=ok. */
+    if (r >= FDI_SAVE_TRUNCATED) {
+        g_disk_dirty[drv] = false;
+        return 0;
+    }
+    return -4;
+}
+
 static void strip_to_basename(const char *full, char *out, size_t out_sz) {
     const char *slash = strrchr(full, '/');
     const char *name  = slash ? slash + 1 : full;
@@ -201,7 +227,30 @@ const char *msx_mounted_name(msx_target_t target) {
     }
 }
 
-int msx_mount_entry(int idx, msx_target_t target, bool reset_after_cart) {
+/* If /MSX/CHEATS/<basename>.mcf exists for the just-mounted cart,
+ * pull it into CheatCodes[] so the master Cheats(ON/OFF) switch can
+ * toggle its patches. Safe to call with no .mcf present. */
+static void try_load_cheats_for(const char *cart_path) {
+    if (!cart_path || !*cart_path) return;
+    const char *slash = strrchr(cart_path, '/');
+    const char *base  = slash ? slash + 1 : cart_path;
+    char mcf[MSX_MAX_PATH_LEN + 32];
+    const char *dot = strrchr(base, '.');
+    size_t stem = dot ? (size_t)(dot - base) : strlen(base);
+    if (stem >= MSX_MAX_PATH_LEN) return;
+    char stembuf[MSX_MAX_PATH_LEN];
+    memcpy(stembuf, base, stem);
+    stembuf[stem] = 0;
+    snprintf(mcf, sizeof(mcf), "/MSX/CHEATS/%s.mcf", stembuf);
+
+    FILINFO fno;
+    if (f_stat(mcf, &fno) != FR_OK) return;
+    int n = LoadMCF(mcf);
+    printf("cheats: %s -> %d MCF entries loaded\n", mcf, n);
+}
+
+int msx_mount_entry_with_mapper(int idx, msx_target_t target, int mapper,
+                                bool reset_after_cart) {
     if (idx < 0 || idx >= msx_entry_count) return -1;
     msx_entry_t *e = &msx_entries[idx];
 
@@ -227,9 +276,10 @@ int msx_mount_entry(int idx, msx_target_t target, bool reset_after_cart) {
 
             msx_entry_path(idx, g_cart_paths[slot], sizeof(g_cart_paths[slot]));
             ROMName[slot] = g_cart_paths[slot];
-            printf("mount: LoadCart(\"%s\", slot=%d)\n", g_cart_paths[slot], slot);
+            printf("mount: LoadCart(\"%s\", slot=%d, mapper=%d)\n",
+                   g_cart_paths[slot], slot, mapper);
 
-            int pages = LoadCart(g_cart_paths[slot], slot, MAP_GUESS);
+            int pages = LoadCart(g_cart_paths[slot], slot, mapper);
             if (!pages) {
                 printf("  LoadCart returned 0 (fMSX rejected the ROM)\n");
                 g_cart_loaded[slot] = false;
@@ -237,6 +287,7 @@ int msx_mount_entry(int idx, msx_target_t target, bool reset_after_cart) {
             }
             g_cart_loaded[slot] = true;
             printf("  mounted %d 8k-pages\n", pages);
+            try_load_cheats_for(g_cart_paths[slot]);
             if (reset_after_cart) ResetMSX(Mode, RAMPages, VRAMPages);
             return 0;
         }
@@ -244,19 +295,31 @@ int msx_mount_entry(int idx, msx_target_t target, bool reset_after_cart) {
         case MSX_TARGET_DISK_B: {
             if (e->kind != MSX_ENTRY_DISK) return -2;
             int drv = (target == MSX_TARGET_DISK_A) ? 0 : 1;
+            /* If the currently-mounted disk is dirty, save it before we
+             * overwrite the FDIDisk buffer. Mount-replace is a common
+             * "swap disks" action and losing writes here would be the
+             * worst-case data-loss path. */
+            if (g_disk_loaded[drv]) {
+                int fr = msx_disk_flush_if_dirty(drv);
+                if (fr < 0 && fr != -3)
+                    printf("  warning: pre-swap flush returned %d\n", fr);
+            }
             /* Disks auto-eject inside ChangeDisk() when a drive is
-             * already loaded (EjectFDI is called before re-Load). The
-             * old FDIDisk buffer passes back through psram_free via
-             * our FRANK_MSX_PSRAM hook. */
+             * already loaded (EjectFDI is called before re-Load). */
             msx_entry_path(idx, g_disk_paths[drv], sizeof(g_disk_paths[drv]));
             DSKName[drv] = g_disk_paths[drv];
             if (!ChangeDisk((byte)drv, g_disk_paths[drv])) return -3;
             g_disk_loaded[drv] = true;
+            g_disk_dirty[drv]  = false;
             return 0;
         }
         default:
             return -1;
     }
+}
+
+int msx_mount_entry(int idx, msx_target_t target, bool reset_after_cart) {
+    return msx_mount_entry_with_mapper(idx, target, MAP_GUESS, reset_after_cart);
 }
 
 int msx_eject(msx_target_t target) {
@@ -276,10 +339,16 @@ int msx_eject(msx_target_t target) {
         case MSX_TARGET_DISK_B: {
             int drv = (target == MSX_TARGET_DISK_A) ? 0 : 1;
             if (!g_disk_loaded[drv]) return -1;
+            /* Flush any pending writes to the SD card before we drop
+             * the in-memory FDIDisk buffer. */
+            int fr = msx_disk_flush_if_dirty(drv);
+            if (fr < 0 && fr != -3)
+                printf("eject: dirty flush returned %d\n", fr);
             /* ChangeDisk(drv, NULL) frees the FDIDisk buffer via
              * EjectFDI. No ResetMSX; disk swap is hot. */
             ChangeDisk((byte)drv, NULL);
             g_disk_loaded[drv] = false;
+            g_disk_dirty[drv]  = false;
             g_disk_paths[drv][0] = 0;
             return 0;
         }
@@ -317,6 +386,7 @@ int msx_create_blank_disk(msx_target_t target) {
     if (!ChangeDisk((byte)drv, "")) return -3;
     if (!SaveFDI(&FDD[drv], g_disk_paths[drv], FMT_MSXDSK)) return -4;
     g_disk_loaded[drv] = true;
+    g_disk_dirty[drv]  = false;
     return 0;
 }
 

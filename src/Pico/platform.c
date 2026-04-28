@@ -75,8 +75,11 @@ int OldScrMode  = 0;
 
 const char *Title = "fMSX 6.0";
 
-/* Joystick holder updated by polling tasks */
-static volatile unsigned int g_last_joystick = 0;
+/* Per-port joystick mask, updated by poll_inputs().
+ *   [0] = MSX joystick port A
+ *   [1] = MSX joystick port B
+ * NES pad 1 + USB pad 0 feed port A; NES pad 2 + USB pad 1 feed port B. */
+static volatile unsigned int g_joy_mask[2] = { 0, 0 };
 
 /* Frame pacing (60 Hz sync timer) — see SetSyncTimer / WaitSyncTimer. */
 static int g_sync_hz = 0;
@@ -448,6 +451,7 @@ static unsigned int sc_to_xk(unsigned char sc) {
         case PSC_PgDn:   return 0xFF56;
         case PSC_F11:    return 0xFFC8;
         case PSC_F12:    return 0xFFC9;
+        case PSC_Tab:    return 0xFF09;  /* Tab — save/load toggle on F5 page */
         default:         return 0;
     }
 }
@@ -464,17 +468,19 @@ static void handle_key_event(int pressed, unsigned char sc) {
     if (sc == PSC_LCtrl || sc == PSC_RCtrl) s_ctrl_down = pressed;
     if (sc == PSC_LAlt  || sc == PSC_RAlt ) s_alt_down  = pressed;
 
-    /* Ctrl+Alt+Del -> MSX hard reset. */
+    /* Ctrl+Alt+Del -> MSX hard reset. Route through the settings
+     * layer so any dirty disks / SRAM get flushed before reset. */
     if (sc == PSC_Delete && pressed && s_ctrl_down && s_alt_down) {
         printf("host: Ctrl+Alt+Del -> ResetMSX\n");
-        ResetMSX(Mode, RAMPages, VRAMPages);
+        msx_settings_request_reset_current();
         s_ctrl_down = s_alt_down = false;
         memset((void *)XKeyState, 0xFF, sizeof(XKeyState));
         memset((void *)KeyState,  0xFF, sizeof(KeyState));
         return;
     }
 
-    /* F11 toggles the loader overlay, F12 the Settings dialog. */
+    /* F11 toggles the loader overlay (also hosts the save-state
+     * actions), F12 the Settings dialog. */
     if (sc == PSC_F11) {
         if (pressed) msx_ui_toggle();
         return;
@@ -515,29 +521,38 @@ static void poll_inputs(void) {
     while (usbhid_wrapper_get_key(&pressed, &sc))
         handle_key_event(pressed, sc);
 
-    unsigned int j = 0;
+    unsigned int j1 = 0, j2 = 0;
 #ifdef NESPAD_GPIO_CLK
     nespad_read();
     /* Mask values come from drivers/nespad/nespad.h — the NES/SNES
-     * serial shift layout spreads them across bits 0..14, not 0..7. */
-    if (nespad_state & DPAD_UP)     j |= BTN_UP;
-    if (nespad_state & DPAD_DOWN)   j |= BTN_DOWN;
-    if (nespad_state & DPAD_LEFT)   j |= BTN_LEFT;
-    if (nespad_state & DPAD_RIGHT)  j |= BTN_RIGHT;
-    if (nespad_state & DPAD_A)      j |= BTN_FIREA;
-    if (nespad_state & DPAD_B)      j |= BTN_FIREB;
-    if (nespad_state & DPAD_SELECT) j |= BTN_SELECT;
-    if (nespad_state & DPAD_START)  j |= BTN_START;
+     * serial shift layout spreads them across bits 0..14, not 0..7.
+     * Pad 1 goes to MSX port A, pad 2 to port B. */
+    for (int i = 0; i < 2; ++i) {
+        uint32_t s = (i == 0) ? nespad_state : nespad_state2;
+        unsigned int m = 0;
+        if (s & DPAD_UP)     m |= BTN_UP;
+        if (s & DPAD_DOWN)   m |= BTN_DOWN;
+        if (s & DPAD_LEFT)   m |= BTN_LEFT;
+        if (s & DPAD_RIGHT)  m |= BTN_RIGHT;
+        if (s & DPAD_A)      m |= BTN_FIREA;
+        if (s & DPAD_B)      m |= BTN_FIREB;
+        if (s & DPAD_SELECT) m |= BTN_SELECT;
+        if (s & DPAD_START)  m |= BTN_START;
+        if (i == 0) j1 |= m; else j2 |= m;
+    }
 #endif
-    /* Merge the USB gamepad on top of the NES/SNES pad so either path
-     * drives the MSX joystick. */
-    j |= usbhid_wrapper_get_joystick();
-    g_last_joystick = j;
+    /* USB gamepads map 1:1 to MSX ports. Slot 0 -> A, slot 1 -> B. */
+    j1 |= usbhid_wrapper_get_joystick_idx(0);
+    j2 |= usbhid_wrapper_get_joystick_idx(1);
+    g_joy_mask[0] = j1;
+    g_joy_mask[1] = j2;
 }
 
 unsigned int GetJoystick(void) {
     poll_inputs();
-    return g_last_joystick;
+    /* Legacy single-port API — return the union of both ports so
+     * callers that don't care about port split still behave. */
+    return g_joy_mask[0] | g_joy_mask[1];
 }
 
 unsigned int GetMouse(void)  { return 0; }
@@ -552,7 +567,8 @@ void SetKeyHandler(void (*handler)(unsigned int)) { (void)handler; }
  * ================================================================== */
 
 unsigned int Joystick(void) {
-    unsigned int J = GetJoystick();
+    /* Drive the host poll + update g_joy_mask[]. */
+    (void)GetJoystick();
 
     /* Copy the accumulated key state into the MSX matrix. */
     memcpy((void *)KeyState, (const void *)XKeyState, sizeof(KeyState));
@@ -574,14 +590,24 @@ unsigned int Joystick(void) {
         WaitSyncTimer();
     }
 
-    unsigned int I = 0;
-    if (J & BTN_LEFT)  I |= JST_LEFT;
-    if (J & BTN_RIGHT) I |= JST_RIGHT;
-    if (J & BTN_UP)    I |= JST_UP;
-    if (J & BTN_DOWN)  I |= JST_DOWN;
-    if (J & BTN_FIREA) I |= JST_FIREA;
-    if (J & BTN_FIREB) I |= JST_FIREB;
-    return I;
+    /* fMSX encodes both joysticks in a single 16-bit word:
+     *   bits 0..5  -> MSX port A (U,D,L,R,FA,FB)
+     *   bits 8..13 -> MSX port B
+     * See MSX.c:1215, where Port1 reads `JoyState & 0x3F` and Port2
+     * reads `(JoyState >> 8) & 0x3F`. */
+    unsigned int out = 0;
+    for (int port = 0; port < 2; ++port) {
+        unsigned int J = g_joy_mask[port];
+        unsigned int I = 0;
+        if (J & BTN_LEFT)  I |= JST_LEFT;
+        if (J & BTN_RIGHT) I |= JST_RIGHT;
+        if (J & BTN_UP)    I |= JST_UP;
+        if (J & BTN_DOWN)  I |= JST_DOWN;
+        if (J & BTN_FIREA) I |= JST_FIREA;
+        if (J & BTN_FIREB) I |= JST_FIREB;
+        out |= (I & 0x3F) << (port * 8);
+    }
+    return out;
 }
 
 void Keyboard(void) { /* handled inline by Joystick()/poll_inputs() */ }
@@ -706,6 +732,86 @@ void TrashMachine(void) {
     SetSyncTimer(0);
     TrashSound();
 }
+
+/* ==================================================================
+ * Persistent hardware state (CMOS / SRAM / Disk) flush helpers.
+ *
+ * fMSX writes CMOS.ROM and <cart>.sav only from TrashMSX(), which we
+ * never call on the Pico (we run forever). Call these helpers from
+ * the UI on eject / power-down / settings-change so the state
+ * actually reaches the SD card.
+ *
+ * The core already owns the actual write: SaveCMOS / SaveSRAM[N] is
+ * set when the MSX touches the RTC or battery-backed SRAM, and the
+ * corresponding file is written via fopen("CMOS.ROM","wb") — which
+ * our POSIX shim routes to FatFS. We just have to fire it ourselves.
+ * ================================================================== */
+
+extern byte SaveCMOS;
+extern byte RTC[4][13];
+
+void fmsx_save_cmos_if_dirty(void) {
+    if (!SaveCMOS) return;
+    printf("persist: writing CMOS.ROM\n");
+    /* ProgDir is the directory used by fMSX's fopen (relative paths
+     * go through the POSIX shim's g_cwd — which is "/MSX" here). */
+    FILE *F = fopen("CMOS.ROM", "wb");
+    if (!F) { printf("  CMOS.ROM open failed\n"); return; }
+    if (fwrite(RTC, 1, sizeof(RTC), F) != sizeof(RTC))
+        printf("  CMOS.ROM write short\n");
+    fclose(F);
+}
+
+/* Cartridge battery-backed SRAM (FMPAC, ASCII8/16, GameMaster2).
+ * fMSX raises SaveSRAM[slot] when the MSX writes to SRAM, and writes
+ * the file from LoadCart()'s save block when the cart is swapped or
+ * ejected. We replicate that block so we can flush without ejecting
+ * (e.g. periodic save before the user yanks the power). */
+extern byte *SRAMData[MAXSLOTS];
+extern byte  SaveSRAM[MAXSLOTS];
+extern char *SRAMName[MAXSLOTS];
+extern byte  ROMType[MAXSLOTS];
+
+int msx_sram_flush_slot(int slot) {
+    if (slot < 0 || slot >= MAXSLOTS) return -1;
+    if (!SRAMData[slot] || !SaveSRAM[slot] || !SRAMName[slot]) return 1;
+
+    printf("persist: writing SRAM %s (slot %d type %d)\n",
+           SRAMName[slot], slot, ROMType[slot]);
+    FILE *F = fopen(SRAMName[slot], "wb");
+    if (!F) { printf("  SRAM open failed\n"); return -2; }
+
+    size_t n = 0;
+    int ok = 1;
+    switch (ROMType[slot]) {
+        case MAP_ASCII8:
+        case MAP_FMPAC:
+            n = fwrite(SRAMData[slot], 1, 0x2000, F);
+            if (n != 0x2000) ok = 0;
+            break;
+        case MAP_ASCII16:
+            n = fwrite(SRAMData[slot], 1, 0x0800, F);
+            if (n != 0x0800) ok = 0;
+            break;
+        case MAP_GMASTER2:
+            if (fwrite(SRAMData[slot], 1, 0x1000, F) != 0x1000) ok = 0;
+            if (fwrite(SRAMData[slot] + 0x2000, 1, 0x1000, F) != 0x1000) ok = 0;
+            break;
+        default:
+            /* Not a SRAM-bearing mapper. */
+            break;
+    }
+    fclose(F);
+    if (!ok) { printf("  SRAM write short\n"); return -3; }
+    /* Leave SaveSRAM[slot]=1 — subsequent writes keep the flag on,
+     * matching fMSX's semantics. */
+    return 0;
+}
+
+/* Runtime gate for FMPAC.ROM loading. Settings dialog (MSX-MUSIC row)
+ * toggles g_settings.fmpac; read through so a fresh boot with the
+ * flag off skips the optional cartridge even if the ROM is present. */
+int fmsx_fmpac_enabled(void) { return g_settings.fmpac != 0; }
 
 /* Weak stubs for bits of fMSX we haven't wired yet. */
 __attribute__((weak)) void MenuMSX(void) { }

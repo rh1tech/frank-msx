@@ -1,10 +1,11 @@
 /*
  * msx_settings.h — mutable runtime settings for the fMSX core.
  *
- * Held in RAM only (no SD persistence yet). Changing any field
- * requires a ResetMSX() call because model / RAM / VRAM all touch
- * the core's memory map. Joystick-socket changes go through fMSX's
- * Mode bits, which ResetMSX also respects.
+ * Persisted to /MSX/msx.ini on the SD card (see msx_settings_save /
+ * msx_settings_load). Changing model / region / RAM / VRAM / joystick
+ * requires ResetMSX(). Live-apply settings (scanlines, colour filter,
+ * audio mode, frame skip, sprites, autofire, font, FMPAC) take effect
+ * immediately.
  */
 #ifndef MSX_SETTINGS_H
 #define MSX_SETTINGS_H
@@ -19,9 +20,17 @@ typedef enum {
     MSX_SETTING_VRAM,         /* 32/64/128/256/512 KB       (needs reset) */
     MSX_SETTING_JOY1,         /* Empty/Joystick/Mouse/...   (needs reset) */
     MSX_SETTING_JOY2,
-    MSX_SETTING_SCANLINES,    /* None / TV / LCD / LCD Raster (live) */
-    MSX_SETTING_COLOR,        /* Normal / Monochrome / Sepia / Green / Amber (live) */
-    MSX_SETTING_AUDIO,        /* HDMI / I2S / PWM / Disabled (live) */
+    MSX_SETTING_SCANLINES,    /* None / TV                  (live)       */
+    MSX_SETTING_COLOR,        /* Normal / Mono / Sepia / Green / Amber   */
+    MSX_SETTING_AUDIO,        /* HDMI / I2S / PWM / Disabled (live)      */
+    MSX_SETTING_FRAMESKIP,    /* 0..4 skipped frames         (live)      */
+    MSX_SETTING_ALLSPRITES,   /* Off / On                    (live)      */
+    MSX_SETTING_AUTOFIRE_A,   /* Off / On                    (live)      */
+    MSX_SETTING_AUTOFIRE_B,   /* Off / On                    (live)      */
+    MSX_SETTING_AUTOSPACE,    /* Off / On                    (live)      */
+    MSX_SETTING_FIXEDFONT,    /* Off / On                    (live)      */
+    MSX_SETTING_FMPAC,        /* Off / On (MSX-MUSIC ROM)    (needs reset)*/
+    MSX_SETTING_CHEATS,       /* Off / On                    (live)      */
     MSX_SETTING_COUNT
 } msx_setting_id_t;
 
@@ -37,18 +46,12 @@ typedef enum {
     MSX_AUDIO_COUNT
 } msx_audio_mode_t;
 
-/* Scanline enum values match the order of SCANLINE_LABELS.
- * Only Off/On are supported today — our HDMI driver has a single
- * line-blanker, so the previous TV/LCD/Raster split all rendered
- * identically. We'll re-introduce the subtypes once the driver grows
- * a proper raster-mask mode. */
 typedef enum {
     MSX_SCAN_OFF = 0,
     MSX_SCAN_ON,
     MSX_SCAN_COUNT
 } msx_scanlines_t;
 
-/* Color-filter enum values match the order of COLOR_LABELS. */
 typedef enum {
     MSX_COLOR_NORMAL = 0,
     MSX_COLOR_MONO,
@@ -68,20 +71,21 @@ typedef struct {
     uint8_t scanlines;   /* msx_scanlines_t */
     uint8_t color;       /* msx_color_filter_t */
     uint8_t audio_mode;  /* msx_audio_mode_t */
+    uint8_t frameskip;   /* 0..4 — draws every (frameskip+1)-th frame */
+    uint8_t all_sprites; /* 0/1 — disable sprites-per-line limit */
+    uint8_t autofire_a;  /* 0/1 */
+    uint8_t autofire_b;  /* 0/1 */
+    uint8_t autospace;   /* 0/1 */
+    uint8_t fixed_font;  /* 0/1 — MSX_FIXEDFONT + DEFAULT.FNT */
+    uint8_t fmpac;       /* 0/1 — attempt FMPAC.ROM load on reset */
+    uint8_t cheats;      /* 0/1 — master cheat enable */
 } msx_settings_t;
 
 extern msx_settings_t g_settings;
 
-/* Number of available values for setting `id`. */
 int  msx_settings_choices(msx_setting_id_t id);
-
-/* Human-readable setting name (fixed label on the left). */
 const char *msx_settings_label(msx_setting_id_t id);
-
-/* Human-readable current value (right side of the row). */
 const char *msx_settings_value_label(msx_setting_id_t id);
-
-/* Step the current value by `delta` (-1 or +1), wrapping. */
 void msx_settings_step(msx_setting_id_t id, int delta);
 
 /* Pull the current boot-time values from main.c into g_settings. */
@@ -93,22 +97,15 @@ void msx_settings_compose(int *mode_out, int *ram_pages_out, int *vram_pages_out
 /* True if the given setting change requires ResetMSX(). */
 bool msx_settings_needs_reset(msx_setting_id_t id);
 
-/* Re-tint the HDMI palette and refresh the scanline flag based on
- * the current color/scanlines settings. Called once at init and again
- * whenever either of those two settings changes. */
+/* Re-push visual / live settings: palette filter, scanlines, UPeriod,
+ * MSX_ALLSPRITE / MSX_AUTOFIREA|B / MSX_AUTOSPACE / MSX_FIXEDFONT bits,
+ * Cheats(). Safe to call while fMSX is running. */
 void msx_settings_apply_visual(void);
 
-/* Apply pending settings: rebuild Mode, reset the MSX, reboot.
- *
- * This does NOT call ResetMSX() directly — reset from inside a key
- * handler runs while RunZ80 sits on the stack, and freeing the old
- * RAM/VRAM under the interpreter's feet causes sporadic hangs. We
- * instead stash the requested Mode/RAM/VRAM and raise ExitNow, so
- * the main loop handles the reset after RunZ80 unwinds. */
+/* Apply pending settings: rebuild Mode, reset the MSX. */
 void msx_settings_apply_and_reset(void);
 
-/* True if the main loop should unwind and perform a deferred reset,
- * using the values returned by msx_settings_pending_reset_values(). */
+/* Legacy pending-reset API — retained as no-ops so main.c still builds. */
 bool msx_settings_reset_pending(void);
 void msx_settings_pending_reset_values(int *mode, int *ram, int *vram);
 void msx_settings_clear_pending_reset(void);
@@ -120,5 +117,14 @@ void msx_settings_request_reset_current(void);
 /* Provided by platform.c — re-pushes every palette slot through the
  * color filter. Called by msx_settings_apply_visual(). */
 void platform_repaint_palette(uint8_t color_filter);
+
+/* ---- Persistence ------------------------------------------------ */
+
+/* Load /MSX/msx.ini into g_settings. Missing file => keep defaults and
+ * return false. Malformed keys are skipped with a printf(). */
+bool msx_settings_load(void);
+
+/* Serialise g_settings to /MSX/msx.ini. Returns true on success. */
+bool msx_settings_save(void);
 
 #endif /* MSX_SETTINGS_H */

@@ -42,6 +42,10 @@ int usbhid_wrapper_get_key(int *pressed, unsigned char *key);
 /* Current gamepad state as EMULib BTN_* mask (merged across slots). */
 unsigned int usbhid_wrapper_get_joystick(void);
 
+/* Per-slot gamepad state (idx = 0 or 1). Returns 0 if that slot isn't
+ * populated — the caller composes P1 / P2 as it sees fit. */
+unsigned int usbhid_wrapper_get_joystick_idx(int idx);
+
 /* MSX-format cumulative mouse state for port N (0 or 1):
  *   bits  0..7  = X position (cumulative, wraps mod 256)
  *   bits  8..15 = Y position
@@ -60,6 +64,7 @@ static inline int          usbhid_wrapper_mouse_connected(void)          { retur
 static inline int          usbhid_wrapper_gamepad_connected(void)        { return 0; }
 static inline int          usbhid_wrapper_get_key(int *p, unsigned char *k) { (void)p; (void)k; return 0; }
 static inline unsigned int usbhid_wrapper_get_joystick(void)             { return 0; }
+static inline unsigned int usbhid_wrapper_get_joystick_idx(int idx)      { (void)idx; return 0; }
 static inline unsigned int usbhid_wrapper_get_mouse(int port)            { (void)port; return 0; }
 
 #endif /* USB_HID_ENABLED */

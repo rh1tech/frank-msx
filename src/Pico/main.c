@@ -471,10 +471,25 @@ int main(void) {
      * DISK.ROM side by side under /MSX/. */
     ProgDir = "/MSX";
 
+    /* Pull stored Mode/RAM/VRAM/visual overrides from /MSX/msx.ini.
+     * Compile-time defaults above are the fallback for a fresh card. */
+    msx_settings_init_from_bootstate();
+    msx_settings_load();
+    {
+        int m, r, v;
+        msx_settings_compose(&m, &r, &v);
+        Mode = m; RAMPages = r; VRAMPages = v;
+    }
+
     if (!InitMachine()) {
         printf("InitMachine() FAILED\n");
         while (true) tight_loop_contents();
     }
+
+    /* Apply live bits (frame skip / palette / scanlines / cheat mask)
+     * once the machine is up. msx_settings_apply_visual reads g_settings
+     * we just loaded and pushes it into UPeriod / Mode / graphics. */
+    msx_settings_apply_visual();
 
     /* Enter emulation — runs the Z80 until ExitNow is raised. */
     StartMSX(Mode, RAMPages, VRAMPages);

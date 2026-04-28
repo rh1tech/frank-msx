@@ -5,6 +5,7 @@
 #include "msx_ui.h"
 #include "msx_loader.h"
 #include "msx_settings.h"
+#include "msx_state.h"
 #include "ui_draw.h"
 #include "board_config.h"
 #include "HDMI.h"
@@ -37,12 +38,21 @@
 #define WIN_PAD    6
 #define MAX_ROWS   14   /* visible list rows */
 
-/* Targets shown on the first page. Must match msx_target_t order. */
-static const char *TARGET_LABELS[MSX_TARGET_COUNT] = {
+/* Targets shown on the first page. First four rows map 1:1 to
+ * msx_target_t; the two trailing rows are state-save actions that
+ * route straight to the state-slot picker, bypassing the slot-action
+ * context menu. */
+#define TARGET_ROW_SAVE_STATE  (MSX_TARGET_COUNT + 0)
+#define TARGET_ROW_LOAD_STATE  (MSX_TARGET_COUNT + 1)
+#define TARGET_PAGE_ROWS       (MSX_TARGET_COUNT + 2)
+
+static const char *TARGET_LABELS[TARGET_PAGE_ROWS] = {
     "Cartridge A",
     "Cartridge B",
     "Disk A",
     "Disk B",
+    "Save current state",
+    "Load state",
 };
 
 typedef enum {
@@ -50,6 +60,8 @@ typedef enum {
     UI_SELECT_TARGET,        /* pick Cart A/B, Disk A/B */
     UI_SLOT_ACTION,          /* context menu for the chosen slot/drive */
     UI_SELECT_FILE,          /* browse SD to pick a ROM/DSK to mount  */
+    UI_SELECT_MAPPER,        /* after picking a cart ROM, choose mapper */
+    UI_STATES,               /* Save-state slot picker (F5)            */
     UI_SETTINGS,
     UI_SETTINGS_CONFIRM,
     UI_BUSY,
@@ -62,6 +74,12 @@ static int  s_file        = 0;
 static int  s_scroll      = 0;
 static int  s_slot_action = 0;   /* row in UI_SLOT_ACTION */
 static int  s_setting_row = 0;
+static int  s_settings_scroll = 0;
+static int  s_mapper_row  = 0;    /* row in UI_SELECT_MAPPER */
+static int  s_pending_file_idx = -1; /* entry chosen before mapper picker */
+static int  s_state_row   = 0;    /* row in UI_STATES */
+static int  s_state_action = 0;   /* 0=Save, 1=Load */
+static ui_state_t s_msg_return = UI_SLOT_ACTION; /* page to return to after UI_MESSAGE */
 static bool s_dirty       = true;
 static char s_msg[96];
 
@@ -71,6 +89,14 @@ static char s_msg[96];
 static bool s_mount_reset_after = false;
 
 extern int InMenu;             /* fMSX flag — silences input */
+
+/* Forward decls so page helpers that live later in the file can call
+ * the chrome/content renderers that are defined near the bottom. */
+static void draw_chrome(uint8_t *fb, int stride, const char *title);
+static void draw_footer(uint8_t *fb, int stride, const char *hint);
+static int  content_x(void);
+static int  content_y(void);
+static int  content_w(void);
 
 void msx_ui_init(void) {
     ui_draw_install_palette();
@@ -94,16 +120,31 @@ void msx_ui_show(void) {
 void msx_ui_show_settings(void) {
     if (s_state != UI_HIDDEN) return;
     msx_settings_init_from_bootstate();
-    s_setting_row = 0;
+    s_setting_row     = 0;
+    s_settings_scroll = 0;
     s_state  = UI_SETTINGS;
     s_dirty  = true;
     InMenu   = 1;
 }
 
+extern volatile byte XKeyState[20];
+extern int ps2kbd_get_key(int *pressed, unsigned char *sc);
+#include "usbhid_wrapper.h"
+
 void msx_ui_hide(void) {
     s_state = UI_HIDDEN;
     InMenu  = 0;
-    /* Invalidate keyboard state so fMSX doesn't see phantom keys. */
+    /* Drain any host key events that were buffered while the overlay
+     * was active — otherwise a stale release (e.g. the Enter we used
+     * to confirm a load-state) bleeds into the MSX matrix right after
+     * LoadState restores the snapshot. */
+    { int p; unsigned char sc;
+      while (ps2kbd_get_key(&p, &sc))          { }
+      while (usbhid_wrapper_get_key(&p, &sc))  { } }
+    /* Reset both the host-visible shadow matrix and the core-facing
+     * KeyState, so Joystick()'s XKeyState→KeyState copy can't re-inject
+     * the pre-overlay state. 0xFF = "no keys pressed" in fMSX's matrix. */
+    memset((void *)XKeyState, 0xFF, sizeof(XKeyState));
     memset((void *)KeyState,  0xFF, sizeof(KeyState));
 }
 
@@ -115,6 +156,15 @@ void msx_ui_toggle(void) {
 void msx_ui_toggle_settings(void) {
     if (s_state == UI_HIDDEN) msx_ui_show_settings();
     else                      msx_ui_hide();
+}
+
+void msx_ui_toggle_states(void) {
+    if (s_state != UI_HIDDEN) { msx_ui_hide(); return; }
+    s_state_row = 0;
+    s_state_action = 0;
+    s_state = UI_STATES;
+    s_dirty = true;
+    InMenu = 1;
 }
 
 extern uint8_t *SCREEN[2];
@@ -182,15 +232,27 @@ static bool target_accepts(msx_target_t t, msx_entry_kind_t k) {
 static bool handle_target_page(unsigned int xk) {
     switch (xk) {
         case XK_Up:
-            if (s_target > 0) --s_target; else s_target = MSX_TARGET_COUNT - 1;
+            if (s_target > 0) --s_target; else s_target = TARGET_PAGE_ROWS - 1;
             s_dirty = true; return true;
         case XK_Down:
-            if (++s_target >= MSX_TARGET_COUNT) s_target = 0;
+            if (++s_target >= TARGET_PAGE_ROWS) s_target = 0;
             s_dirty = true; return true;
         case XK_Return:
-            s_state        = UI_SLOT_ACTION;
-            s_slot_action  = 0;
-            s_dirty        = true;
+            if (s_target == TARGET_ROW_SAVE_STATE) {
+                s_state_row = 0;
+                s_state_action = 0;     /* Save */
+                s_state = UI_STATES;
+                s_dirty = true;
+            } else if (s_target == TARGET_ROW_LOAD_STATE) {
+                s_state_row = 0;
+                s_state_action = 1;     /* Load */
+                s_state = UI_STATES;
+                s_dirty = true;
+            } else {
+                s_state        = UI_SLOT_ACTION;
+                s_slot_action  = 0;
+                s_dirty        = true;
+            }
             return true;
         case XK_Escape:
             msx_ui_hide(); return true;
@@ -336,6 +398,22 @@ static bool handle_slot_action_page(unsigned int xk) {
 #define SETTINGS_BACK_ROW    (MSX_SETTING_COUNT + 1)
 #define SETTINGS_TOTAL_ROWS  (MSX_SETTING_COUNT + 2)
 
+/* Window height fits ~16 rows after chrome; scroll when settings grow.
+ * Leave one row's worth of breathing room above the footer so the last
+ * visible setting isn't touching the legend. */
+#define SETTINGS_VISIBLE_ROWS 14
+
+static void clamp_settings_scroll(void) {
+    if (s_setting_row < s_settings_scroll)
+        s_settings_scroll = s_setting_row;
+    else if (s_setting_row >= s_settings_scroll + SETTINGS_VISIBLE_ROWS)
+        s_settings_scroll = s_setting_row - SETTINGS_VISIBLE_ROWS + 1;
+    if (s_settings_scroll < 0) s_settings_scroll = 0;
+    if (s_settings_scroll > SETTINGS_TOTAL_ROWS - SETTINGS_VISIBLE_ROWS)
+        s_settings_scroll = SETTINGS_TOTAL_ROWS - SETTINGS_VISIBLE_ROWS;
+    if (s_settings_scroll < 0) s_settings_scroll = 0;
+}
+
 static bool handle_settings_page(unsigned int xk) {
     switch (xk) {
         case XK_Escape:
@@ -346,9 +424,22 @@ static bool handle_settings_page(unsigned int xk) {
         case XK_Up:
             if (s_setting_row > 0) --s_setting_row;
             else s_setting_row = SETTINGS_TOTAL_ROWS - 1;
+            clamp_settings_scroll();
             s_dirty = true; return true;
         case XK_Down:
             if (++s_setting_row >= SETTINGS_TOTAL_ROWS) s_setting_row = 0;
+            clamp_settings_scroll();
+            s_dirty = true; return true;
+        case XK_Page_Up:
+            s_setting_row -= SETTINGS_VISIBLE_ROWS / 2;
+            if (s_setting_row < 0) s_setting_row = 0;
+            clamp_settings_scroll();
+            s_dirty = true; return true;
+        case XK_Page_Down:
+            s_setting_row += SETTINGS_VISIBLE_ROWS / 2;
+            if (s_setting_row >= SETTINGS_TOTAL_ROWS)
+                s_setting_row = SETTINGS_TOTAL_ROWS - 1;
+            clamp_settings_scroll();
             s_dirty = true; return true;
         case XK_Left:
             if (s_setting_row < MSX_SETTING_COUNT)
@@ -383,6 +474,139 @@ static bool handle_settings_confirm(unsigned int xk) {
             msx_ui_hide();
             msx_settings_apply_and_reset();
             return true;
+    }
+    return false;
+}
+
+/* ---- Save-state slot picker ------------------------------------- */
+
+/* Layout: header = "Save / Load", row per slot = "Slot N  [used/empty]".
+ * Reached from the F11 loader target page (Save current state / Load state
+ * rows). Esc returns to that target page. */
+static bool handle_states_page(unsigned int xk) {
+    switch (xk) {
+        case XK_Escape:
+            s_state = UI_SELECT_TARGET;
+            s_dirty = true;
+            return true;
+        case XK_Up:
+            if (s_state_row > 0) --s_state_row;
+            else s_state_row = MSX_STATE_SLOTS - 1;
+            s_dirty = true; return true;
+        case XK_Down:
+            if (++s_state_row >= MSX_STATE_SLOTS) s_state_row = 0;
+            s_dirty = true; return true;
+        case XK_Return: {
+            int rc;
+            if (s_state_action == 0) {
+                msx_ui_show_busy("Saving state to PSRAM + SD...");
+                rc = msx_state_save(s_state_row);
+                if (rc == 0) {
+                    snprintf(s_msg, sizeof(s_msg),
+                             "State saved to slot %d.", s_state_row);
+                    /* Success notice — dismiss closes the overlay so
+                     * the user drops straight back into the game. */
+                    s_msg_return = UI_HIDDEN;
+                    s_state = UI_MESSAGE; s_dirty = true;
+                } else {
+                    snprintf(s_msg, sizeof(s_msg),
+                             "Save failed (code %d)", rc);
+                    s_msg_return = UI_STATES;
+                    s_state = UI_MESSAGE; s_dirty = true;
+                }
+            } else {
+                if (!msx_state_slot_exists(s_state_row)) {
+                    snprintf(s_msg, sizeof(s_msg),
+                             "Slot %d is empty.", s_state_row);
+                    s_msg_return = UI_STATES;
+                    s_state = UI_MESSAGE; s_dirty = true;
+                    return true;
+                }
+                msx_ui_show_busy("Loading state from SD...");
+                rc = msx_state_load(s_state_row);
+                if (rc == 0) {
+                    /* Hide and resume — the MSX state is now restored. */
+                    msx_ui_hide();
+                } else {
+                    snprintf(s_msg, sizeof(s_msg),
+                             "Load failed (code %d)", rc);
+                    s_msg_return = UI_STATES;
+                    s_state = UI_MESSAGE; s_dirty = true;
+                }
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
+static void render_states_page(uint8_t *fb, int stride) {
+    draw_chrome(fb, stride, s_state_action == 0 ? " Save state " : " Load state ");
+    int x = content_x(), y = content_y();
+    int cw = content_w();
+    int max_chars = (cw - 4) / UI_CHAR_W;
+
+    for (int i = 0; i < MSX_STATE_SLOTS; ++i) {
+        bool sel = (i == s_state_row);
+        char line[48];
+        snprintf(line, sizeof(line), "Slot %d   %s",
+                 i, msx_state_slot_exists(i) ? "[used]" : "[empty]");
+        ui_draw_menu_item(fb, stride, x, y, cw, line, max_chars, sel);
+        y += UI_LINE_H + 1;
+    }
+    y += 6;
+    ui_draw_string(fb, stride, x, y,
+        s_state_action == 0 ? "ENTER: save selected slot"
+                            : "ENTER: load selected slot", UI_COLOR_FG);
+    draw_footer(fb, stride, "UP/DN  ENTER  ESC back");
+}
+
+/* ---- Mapper picker (cartridge only) ----------------------------- */
+
+/* MAP_* values from MSX.h: 0=Gen8, 1=Gen16, 2=Konami5, 3=Konami4,
+ * 4=ASCII8, 5=ASCII16, 6=GMaster2, 7=FMPAC, 8=GUESS (our default). */
+static const struct { int id; const char *label; } MAPPER_CHOICES[] = {
+    { 8, "Auto (guess)" },
+    { 0, "Generic 8 KB" },
+    { 1, "Generic 16 KB" },
+    { 2, "Konami (SCC, 5/7/9/B)" },
+    { 3, "Konami (4/6/8/A)" },
+    { 4, "ASCII 8 KB" },
+    { 5, "ASCII 16 KB" },
+    { 6, "GameMaster 2" },
+    { 7, "FMPAC" },
+};
+#define MAPPER_CHOICE_COUNT ((int)(sizeof(MAPPER_CHOICES)/sizeof(MAPPER_CHOICES[0])))
+
+static bool handle_mapper_page(unsigned int xk) {
+    switch (xk) {
+        case XK_Up:
+            if (s_mapper_row > 0) --s_mapper_row;
+            else s_mapper_row = MAPPER_CHOICE_COUNT - 1;
+            s_dirty = true; return true;
+        case XK_Down:
+            if (++s_mapper_row >= MAPPER_CHOICE_COUNT) s_mapper_row = 0;
+            s_dirty = true; return true;
+        case XK_Escape:
+            s_state = UI_SELECT_FILE;
+            s_dirty = true; return true;
+        case XK_Return: {
+            int mapper = MAPPER_CHOICES[s_mapper_row].id;
+            int idx = s_pending_file_idx;
+            if (idx < 0) { msx_ui_hide(); return true; }
+            s_state = UI_BUSY;
+            msx_ui_show_busy("Loading cartridge...");
+            int rc = msx_mount_entry_with_mapper(idx, (msx_target_t)s_target,
+                                                 mapper, s_mount_reset_after);
+            s_pending_file_idx = -1;
+            if (rc == 0) msx_ui_hide();
+            else {
+                snprintf(s_msg, sizeof(s_msg),
+                         "Mount failed (code %d)", rc);
+                s_state = UI_MESSAGE; s_dirty = true;
+            }
+            return true;
+        }
     }
     return false;
 }
@@ -432,13 +656,21 @@ static bool handle_file_page(unsigned int xk) {
                 s_dirty = true; return true;
             }
 
-            /* Mount immediately. Cartridge = reset after, disk =
-             * live swap. The slot-action page set s_mount_reset_after
-             * when it picked "Insert cartridge" / "Insert disk". */
+            /* Cartridge: ask for mapper first.
+             * Disk: mount immediately (no mapper concept). */
+            bool is_cart = (s_target == MSX_TARGET_CART_A ||
+                            s_target == MSX_TARGET_CART_B);
+            if (is_cart) {
+                s_pending_file_idx = e;
+                s_mapper_row = 0;       /* default = Auto */
+                s_state = UI_SELECT_MAPPER;
+                s_dirty = true;
+                return true;
+            }
+
             s_state = UI_BUSY;
             s_dirty = true;
-            msx_ui_show_busy(s_target < 2 ? "Loading cartridge..."
-                                          : "Loading disk image...");
+            msx_ui_show_busy("Loading disk image...");
             int rc = msx_mount_entry(e, (msx_target_t)s_target,
                                      s_mount_reset_after);
             if (rc == 0) {
@@ -459,8 +691,19 @@ bool msx_ui_handle_key(unsigned int xk) {
     if (s_state == UI_HIDDEN) return false;
     if (s_state == UI_MESSAGE) {
         if (xk == XK_Return || xk == XK_Escape) {
-            s_state = UI_SLOT_ACTION;
-            s_dirty = true;
+            /* After dismissing a notice, close the overlay — most
+             * messages report the outcome of an action the user just
+             * finished (save-state, mount, eject), so returning to
+             * the emulator is what they want. The slot-action / other
+             * pages that want a different flow should set
+             * s_msg_return before raising UI_MESSAGE. */
+            if (s_msg_return == UI_HIDDEN) {
+                msx_ui_hide();
+            } else {
+                s_state = s_msg_return;
+                s_msg_return = UI_HIDDEN;   /* reset for next time */
+                s_dirty = true;
+            }
         }
         return true;
     }
@@ -468,6 +711,8 @@ bool msx_ui_handle_key(unsigned int xk) {
     if (s_state == UI_SELECT_TARGET)    return handle_target_page(xk);
     if (s_state == UI_SLOT_ACTION)      return handle_slot_action_page(xk);
     if (s_state == UI_SELECT_FILE)      return handle_file_page(xk);
+    if (s_state == UI_SELECT_MAPPER)    return handle_mapper_page(xk);
+    if (s_state == UI_STATES)           return handle_states_page(xk);
     if (s_state == UI_SETTINGS)         return handle_settings_page(xk);
     if (s_state == UI_SETTINGS_CONFIRM) return handle_settings_confirm(xk);
     return false;
@@ -496,9 +741,8 @@ static void render_target_page(uint8_t *fb, int stride) {
     int y  = content_y() + 6;
     int x  = content_x();
     int cw = content_w();
-    int max_chars = (cw - 4) / UI_CHAR_W;
 
-    for (int i = 0; i < MSX_TARGET_COUNT; ++i) {
+    for (int i = 0; i < TARGET_PAGE_ROWS; ++i) {
         bool sel = (i == s_target);
         uint8_t bg = sel ? UI_COLOR_ACCENT    : UI_COLOR_BG;
         uint8_t fg = sel ? UI_COLOR_ACCENT_FG : UI_COLOR_FG;
@@ -507,15 +751,26 @@ static void render_target_page(uint8_t *fb, int stride) {
         ui_fill_rect(fb, stride, x, y, cw, UI_LINE_H, bg);
         ui_draw_string(fb, stride, x + 2, y + 1, TARGET_LABELS[i], fg);
 
-        /* Currently mounted filename (if any) right-aligned in the row. */
-        const char *mounted = msx_mounted_name((msx_target_t)i);
+        /* Right-hand hint:
+         *   cart / disk rows    -> currently-mounted filename or (empty)
+         *   save-state row      -> count of used slots
+         *   load-state row      -> same                                   */
         const char *display = NULL;
-        char buf[MSX_MAX_FILENAME_LEN + 2];
-        if (mounted) {
-            const char *slash = strrchr(mounted, '/');
-            display = slash ? slash + 1 : mounted;
+        char buf[32];
+        if (i < MSX_TARGET_COUNT) {
+            const char *mounted = msx_mounted_name((msx_target_t)i);
+            if (mounted) {
+                const char *slash = strrchr(mounted, '/');
+                display = slash ? slash + 1 : mounted;
+            } else {
+                display = "(empty)";
+            }
         } else {
-            display = "(empty)";
+            int used = 0;
+            for (int s = 0; s < MSX_STATE_SLOTS; ++s)
+                if (msx_state_slot_exists(s)) ++used;
+            snprintf(buf, sizeof(buf), "%d/%d used", used, MSX_STATE_SLOTS);
+            display = buf;
         }
         int avail = cw - 2 - (int)strlen(TARGET_LABELS[i]) * UI_CHAR_W - 8;
         int max_right = avail > 0 ? avail / UI_CHAR_W : 0;
@@ -523,9 +778,7 @@ static void render_target_page(uint8_t *fb, int stride) {
         if (max_right < 3) max_right = 3;
         int shown = (dlen <= max_right) ? dlen : max_right;
         int dx = x + cw - 4 - shown * UI_CHAR_W;
-        /* Re-use the truncator so long names still make sense. */
         ui_draw_string_truncated(fb, stride, dx, y + 1, display, max_right, fg);
-        (void)buf;
 
         y += UI_LINE_H + 2;
     }
@@ -622,42 +875,54 @@ static void render_settings_page(uint8_t *fb, int stride) {
     int x = content_x(), y = content_y();
     int cw = content_w();
 
-    /* Each row: label on the left, value on the right. When the row
-     * is the selected one, the whole row is drawn inverted. */
-    for (int i = 0; i < MSX_SETTING_COUNT; ++i) {
+    /* Scrolled window: draw SETTINGS_VISIBLE_ROWS rows starting at
+     * s_settings_scroll. Each row is either a setting, an "Apply"
+     * action row, or a "Back" action row. */
+    int last = s_settings_scroll + SETTINGS_VISIBLE_ROWS;
+    if (last > SETTINGS_TOTAL_ROWS) last = SETTINGS_TOTAL_ROWS;
+
+    for (int i = s_settings_scroll; i < last; ++i) {
         bool sel = (i == s_setting_row);
         uint8_t bg = sel ? UI_COLOR_ACCENT : UI_COLOR_BG;
         uint8_t fg = sel ? UI_COLOR_ACCENT_FG : UI_COLOR_FG;
 
-        ui_fill_rect(fb, stride, x, y, cw, UI_LINE_H, bg);
-        ui_draw_string(fb, stride, x + 2, y + 1,
-                       msx_settings_label((msx_setting_id_t)i), fg);
+        if (i < MSX_SETTING_COUNT) {
+            ui_fill_rect(fb, stride, x, y, cw, UI_LINE_H, bg);
+            ui_draw_string(fb, stride, x + 2, y + 1,
+                           msx_settings_label((msx_setting_id_t)i), fg);
 
-        /* Value, right-aligned with chevrons hinting that L/R cycles. */
-        const char *val = msx_settings_value_label((msx_setting_id_t)i);
-        int vlen = (int)strlen(val);
-        int vx = x + cw - 4 - (vlen + 2) * UI_CHAR_W;
-        if (sel) ui_draw_string(fb, stride, vx - UI_CHAR_W, y + 1, "<", fg);
-        ui_draw_string(fb, stride, vx, y + 1, val, fg);
-        if (sel) ui_draw_string(fb, stride, vx + vlen * UI_CHAR_W + 2, y + 1, ">", fg);
-
+            /* Value, right-aligned with chevrons hinting L/R cycles. */
+            const char *val = msx_settings_value_label((msx_setting_id_t)i);
+            int vlen = (int)strlen(val);
+            int vx = x + cw - 4 - (vlen + 2) * UI_CHAR_W;
+            if (sel) ui_draw_string(fb, stride, vx - UI_CHAR_W, y + 1, "<", fg);
+            ui_draw_string(fb, stride, vx, y + 1, val, fg);
+            if (sel) ui_draw_string(fb, stride, vx + vlen * UI_CHAR_W + 2, y + 1, ">", fg);
+        } else if (i == SETTINGS_APPLY_ROW) {
+            ui_draw_menu_item(fb, stride, x, y, cw,
+                              "Apply and Reset MSX",
+                              (cw - 4) / UI_CHAR_W, sel);
+        } else if (i == SETTINGS_BACK_ROW) {
+            ui_draw_menu_item(fb, stride, x, y, cw,
+                              "Back to MSX",
+                              (cw - 4) / UI_CHAR_W, sel);
+        }
         y += UI_LINE_H + 1;
     }
 
-    /* Apply and Back share the same left indent as the setting rows
-     * so they read as menu items rather than dialog buttons. */
-    y += 4;
-    ui_draw_menu_item(fb, stride, x, y, cw,
-                      "Apply and Reset MSX",
-                      (cw - 4) / UI_CHAR_W,
-                      s_setting_row == SETTINGS_APPLY_ROW);
-    y += UI_LINE_H + 1;
-    ui_draw_menu_item(fb, stride, x, y, cw,
-                      "Back to MSX",
-                      (cw - 4) / UI_CHAR_W,
-                      s_setting_row == SETTINGS_BACK_ROW);
+    /* Scrollbar on the right when the list overflows. Minus one so it
+     * doesn't touch the row of dashes above the footer. */
+    if (SETTINGS_TOTAL_ROWS > SETTINGS_VISIBLE_ROWS) {
+        ui_draw_scrollbar(fb, stride,
+                          WIN_X + WIN_W - WIN_PAD - 4,
+                          content_y(),
+                          SETTINGS_VISIBLE_ROWS * (UI_LINE_H + 1) - 1,
+                          SETTINGS_TOTAL_ROWS,
+                          SETTINGS_VISIBLE_ROWS,
+                          s_settings_scroll);
+    }
 
-    draw_footer(fb, stride, "UP/DN  LEFT/RIGHT  ENTER  ESC");
+    draw_footer(fb, stride, "UP/DN PG  LEFT/RIGHT  ENTER  ESC");
 }
 
 static void render_settings_confirm(uint8_t *fb, int stride) {
@@ -673,6 +938,25 @@ static void render_settings_confirm(uint8_t *fb, int stride) {
     y += UI_LINE_H + 6;
     ui_draw_string(fb, stride, x, y, "Continue?", UI_COLOR_FG);
     draw_footer(fb, stride, "ENTER confirm  ESC cancel");
+}
+
+static void render_mapper_page(uint8_t *fb, int stride) {
+    draw_chrome(fb, stride, " MegaROM mapper ");
+    int x = content_x(), y = content_y();
+    int cw = content_w();
+    int max_chars = (cw - 4) / UI_CHAR_W;
+
+    ui_draw_string(fb, stride, x, y,
+        "Pick a mapper (Auto works for most).", UI_COLOR_FG);
+    y += UI_LINE_H + 4;
+
+    for (int i = 0; i < MAPPER_CHOICE_COUNT; ++i) {
+        ui_draw_menu_item(fb, stride, x, y, cw,
+                          MAPPER_CHOICES[i].label, max_chars,
+                          i == s_mapper_row);
+        y += UI_LINE_H + 1;
+    }
+    draw_footer(fb, stride, "UP/DN  ENTER  ESC back");
 }
 
 static void render_message_page(uint8_t *fb, int stride) {
@@ -692,6 +976,8 @@ void msx_ui_render(uint8_t *fb, int stride, int height) {
         case UI_SELECT_TARGET:    render_target_page(fb, stride);      break;
         case UI_SLOT_ACTION:      render_slot_action_page(fb, stride); break;
         case UI_SELECT_FILE:      render_file_page(fb, stride);        break;
+        case UI_SELECT_MAPPER:    render_mapper_page(fb, stride);      break;
+        case UI_STATES:           render_states_page(fb, stride);      break;
         case UI_SETTINGS:         render_settings_page(fb, stride);    break;
         case UI_SETTINGS_CONFIRM: render_settings_confirm(fb, stride); break;
         case UI_BUSY:             draw_chrome(fb, stride, " Working... "); break;

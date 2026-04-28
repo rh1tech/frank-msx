@@ -363,6 +363,9 @@ byte Write1793(register WD1793 *D,register byte A,register byte V)
           if(D->Verbose) printf("WD1793: WRITE COMPLETED\n");
           D->R[0]&= ~(F_DRQ|F_BUSY);
           D->IRQ  = WD1793_IRQ;
+          /* Tell the host side the floppy in the active drive has
+           * changed — flushed back to SD on eject / power-down. */
+          { extern void msx_disk_mark_dirty(byte); msx_disk_mark_dirty(D->Drive); }
         }
       }
       /* Save last written value */
