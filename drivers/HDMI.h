@@ -39,6 +39,20 @@ typedef enum g_out{
     g_out_VGA,g_out_HDMI
 }g_out;
 
+/* Runtime VGA vs HDMI autodetection.
+ * main.c probes the HDMI connector's clock-pair pins (GPIO12/13) with
+ * testPins() before graphics_init() and sets SELECT_VGA accordingly.
+ * When set, graphics_init() / graphics_set_palette() / graphics_set_bgcolor()
+ * dispatch to the VGA driver in HDMI_vga.c instead of the HDMI TMDS path. */
+extern bool SELECT_VGA;
+int testPins(uint32_t pin0, uint32_t pin1);
+
+/* HDMI-only entry points (still available when the VGA dispatcher is in
+ * place; used internally and by main.c during HDMI-only paths). */
+void graphics_init_hdmi(void);
+void graphics_set_palette_hdmi(uint8_t i, uint32_t color888);
+void graphics_set_bgcolor_hdmi(uint32_t color888);
+
 typedef struct video_mode_t{
   int h_total;
   int h_width;

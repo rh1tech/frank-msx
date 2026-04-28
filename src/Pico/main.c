@@ -8,6 +8,7 @@
 
 #include "pico/stdlib.h"
 #include "pico/multicore.h"
+#include "pico/time.h"
 #include "hardware/vreg.h"
 #include "hardware/clocks.h"
 #include "hardware/structs/qmi.h"
@@ -21,13 +22,17 @@
 #include "HDMI.h"
 #include "psram_init.h"
 #include "psram_allocator.h"
-#ifndef HDMI_HSTX
+#ifdef HDMI_HSTX
+#include "i2s_audio.h"
+#else
 #include "audio.h"
 #endif
+#include "pwm_audio.h"
 #include "ff.h"
 #include "nespad/nespad.h"
 #include "ps2kbd_wrapper.h"
 #include "usbhid_wrapper.h"
+#include "msx_settings.h"
 
 #include "MSX.h"
 #include "EMULib.h"
@@ -112,6 +117,101 @@ unsigned audio_ring_push_mono(const int16_t *samples, unsigned count) {
 
 unsigned audio_ring_free(void) {
     return AUDIO_RING_FRAMES - (g_audio_prod - g_audio_cons);
+}
+
+/* ---- PWM audio (shared by HSTX + PIO builds) -------------------------
+ *
+ * Thin wrapper around drivers/pwm_audio: DMA-paced double-buffered PWM
+ * fed by DREQ from the audio slice. Two PWM pins (PWM_PIN0 / PWM_PIN1)
+ * drive an RC low-pass filter. Lazy init on first sample push so HSTX
+ * builds that default to HDMI audio don't claim the DMA/PWM slice until
+ * the user selects PWM in Settings. */
+static bool pwm_audio_initialized = false;
+
+static void ensure_pwm_audio_initialized(void) {
+    if (pwm_audio_initialized) return;
+    pwm_audio_init(PWM_PIN0, PWM_PIN1, AUDIO_SAMPLE_RATE);
+    /* Match the MSX region's vsync so the DMA chunk drains at the same
+     * rate platform.c produces samples. platform.c defaults to PAL for
+     * MSX2/2+ and flips per model (see main.c below). */
+    pwm_audio_set_frame_rate((Mode & MSX_PAL) ? 50 : 60);
+    pwm_audio_initialized = true;
+}
+
+#ifdef HDMI_HSTX
+/* HSTX path: I2S is lazily initialised the first time the user picks
+ * the "I2S" audio mode — avoids claiming PIO state machines / DMA
+ * channels when HDMI audio is the default. */
+static bool i2s_initialized = false;
+static void ensure_i2s_initialized(void) {
+    if (i2s_initialized) return;
+    i2s_audio_init(I2S_DATA_PIN, I2S_CLOCK_PIN_BASE, AUDIO_SAMPLE_RATE);
+    i2s_initialized = true;
+}
+#endif
+
+/* Audio dispatcher — picks the backend based on the current settings.
+ * Called from platform.c's WriteAudio() with mono int16 samples. */
+void audio_dispatch_push_samples(const int16_t *buf, int count) {
+    uint8_t mode = g_settings.audio_mode;
+    if (mode == MSX_AUDIO_PWM) {
+        ensure_pwm_audio_initialized();
+        pwm_audio_push_samples(buf, count);
+#ifdef HDMI_HSTX
+        /* Still pump HDMI silence so the sink keeps the audio clock. */
+        hdmi_hstx_fill_silence(count);
+#endif
+        return;
+    }
+    if (mode == MSX_AUDIO_DISABLED) {
+#ifdef HDMI_HSTX
+        hdmi_hstx_fill_silence(count);
+#endif
+        return;
+    }
+#ifdef HDMI_HSTX
+    if (mode == MSX_AUDIO_I2S) {
+        ensure_i2s_initialized();
+        i2s_audio_push_samples(buf, count);
+        hdmi_hstx_fill_silence(count);
+        return;
+    }
+    /* Default (MSX_AUDIO_HDMI). */
+    hdmi_hstx_push_samples(buf, count);
+#else
+    /* PIO HDMI build: HDMI audio is not available, so HDMI mode
+     * collapses onto the I2S ring path. I2S mode is the same path. */
+    (void)audio_ring_push_mono(buf, (unsigned)count);
+#endif
+}
+
+void audio_dispatch_fill_silence(int count) {
+    uint8_t mode = g_settings.audio_mode;
+    if (mode == MSX_AUDIO_PWM) {
+        ensure_pwm_audio_initialized();
+        pwm_audio_fill_silence(count);
+#ifdef HDMI_HSTX
+        hdmi_hstx_fill_silence(count);
+#endif
+        return;
+    }
+    if (mode == MSX_AUDIO_DISABLED) {
+#ifdef HDMI_HSTX
+        hdmi_hstx_fill_silence(count);
+#endif
+        return;
+    }
+#ifdef HDMI_HSTX
+    if (mode == MSX_AUDIO_I2S) {
+        ensure_i2s_initialized();
+        i2s_audio_fill_silence(count);
+        hdmi_hstx_fill_silence(count);
+        return;
+    }
+    hdmi_hstx_fill_silence(count);
+#else
+    (void)count; /* PIO path: the Core 1 render_core handles underrun. */
+#endif
 }
 
 /* ---- Render core (Core 1): boots audio + drains the ring ------------- */
@@ -223,14 +323,31 @@ int main(void) {
     /* 5. Clear framebuffers */
     memset(screen_mem, 0, sizeof(screen_mem));
 
-    /* 6. HDMI (Core 0 init, Core 1 runs audio) */
-    printf("Initializing HDMI...\n");
+    /* 6. Video output (Core 0 init, Core 1 runs audio).
+     *
+     * On the PIO HDMI path the M2 board shares the HDMI connector with
+     * an optional HDMI-to-VGA ribbon/DAC. testPins() probes the clock
+     * pair (GPIO12/13) before graphics_init(): when the pins are
+     * electrically shorted through the ribbon, SELECT_VGA is raised and
+     * graphics_init() brings up the VGA PIO/DMA pipeline instead of
+     * HDMI TMDS. When a real HDMI cable is plugged in, the pins float
+     * independently, SELECT_VGA stays false, and the TMDS path runs
+     * unchanged. The HSTX build skips this — HDMI is the only mode. */
+#ifndef HDMI_HSTX
+    {
+        int link = testPins(HDMI_BASE_PIN, HDMI_BASE_PIN + 1);
+        SELECT_VGA = (link == 0) || (link == 0x1F);
+        printf("Video: probe link=0x%02X -> %s\n",
+               (unsigned)link, SELECT_VGA ? "VGA" : "HDMI");
+    }
+#endif
+    printf("Initializing video output...\n");
     graphics_init(g_out_HDMI);
     graphics_set_buffer(SCREEN[0]);
     graphics_set_res(FB_W, FB_H);
     graphics_set_shift((320 - FB_W) / 2, 0);  /* centre horizontally */
     graphics_set_mode(GRAPHICSMODE_DEFAULT);
-    printf("HDMI initialized\n");
+    printf("Video output initialized\n");
 
     /* 7. PS/2 + NES pad first, so they grab their PIO1 state machines
      * (SM0 + SM2 for PS/2) before I2S audio claims the next unused one.

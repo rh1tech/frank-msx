@@ -60,16 +60,23 @@ add_subdirectory(drivers/usbhid)
 #-----------------------------------------------------------------------------
 if(HDMI_HSTX)
     add_subdirectory(drivers/pico_hdmi)
+    add_subdirectory(drivers/i2s)
 endif()
 
 # Video + audio + PSRAM live in a single "drivers" library. The video
 # driver source swaps depending on HDMI_HSTX: the PIO HDMI path compiles
-# HDMI.c + hdmi_scanline.S, while the HSTX path compiles HDMI_hstx.c and
-# leans on the pico_hdmi/i2s subdirectories above.
+# HDMI.c + hdmi_scanline.S + HDMI_vga.c + test_pins.c so the PIO path can
+# autodetect VGA vs HDMI at runtime. The HSTX path compiles HDMI_hstx.c
+# and leans on the pico_hdmi/i2s subdirectories above.
 if(HDMI_HSTX)
     set(_VIDEO_DRIVER_SRC drivers/HDMI_hstx.c)
 else()
-    set(_VIDEO_DRIVER_SRC drivers/HDMI.c drivers/hdmi_scanline.S)
+    set(_VIDEO_DRIVER_SRC
+        drivers/HDMI.c
+        drivers/hdmi_scanline.S
+        drivers/HDMI_vga.c
+        drivers/test_pins.c
+    )
 endif()
 
 add_library(drivers
@@ -79,6 +86,7 @@ add_library(drivers
     drivers/dlmalloc.c
     drivers/audio.c
     drivers/audio_i2s_opt.S
+    drivers/pwm_audio/pwm_audio.c
     drivers/uart_logging.c
 )
 
@@ -87,7 +95,7 @@ add_library(drivers
 set_source_files_properties(drivers/dlmalloc.c PROPERTIES COMPILE_DEFINITIONS
     "ONLY_MSPACES=1;HAVE_MMAP=0;HAVE_MORECORE=0;NO_MALLOC_STATS=1;USE_LOCKS=0;ABORT_ON_ASSERT_FAILURE=0;MALLOC_FAILURE_ACTION=;LACKS_SYS_MMAN_H=1;LACKS_UNISTD_H=1;LACKS_SYS_PARAM_H=1")
 
-target_include_directories(drivers PUBLIC drivers src)
+target_include_directories(drivers PUBLIC drivers drivers/pwm_audio src)
 target_compile_definitions(drivers PRIVATE
     BOARD_${BOARD_VARIANT}
     PSRAM_MAX_FREQ_MHZ=${PSRAM_SPEED}
@@ -97,6 +105,7 @@ target_link_libraries(drivers
     pico_stdlib
     hardware_dma
     hardware_pio
+    hardware_pwm
     hardware_spi
     hardware_gpio
     hardware_clocks
@@ -105,7 +114,7 @@ target_link_libraries(drivers
 )
 
 if(HDMI_HSTX)
-    target_link_libraries(drivers pico_multicore pico_hdmi)
+    target_link_libraries(drivers pico_multicore pico_hdmi i2s_audio)
     target_compile_definitions(drivers PUBLIC HDMI_HSTX=1)
 endif()
 
@@ -174,7 +183,8 @@ endif()
 
 if(HDMI_HSTX)
     target_compile_definitions(frank-msx PRIVATE HDMI_HSTX=1)
-    target_include_directories(frank-msx PRIVATE drivers)
+    target_include_directories(frank-msx PRIVATE drivers drivers/i2s)
+    target_link_libraries(frank-msx i2s_audio)
 endif()
 
 target_compile_definitions(frank-msx PRIVATE

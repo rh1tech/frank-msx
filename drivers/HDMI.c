@@ -57,8 +57,15 @@ static inline uint32_t rgb_to_grey(uint32_t color888) {
     return (Y << 16) | (Y << 8) | Y;
 }
 
+/* Shadow of the framebuffer pointer in __scratch_y — the VGA ISR in
+ * HDMI_vga.c reads from this instead of calling get_line_buffer() so it
+ * never has to branch into flash. Declared extern so we can update it
+ * from graphics_set_buffer() without adding another header. */
+extern uint8_t *vga_fb;
+
 void graphics_set_buffer(uint8_t *buffer) {
     graphics_buffer = buffer;
+    vga_fb = buffer;
 }
 
 uint8_t* graphics_get_buffer(void) {
@@ -823,18 +830,9 @@ uint32_t graphics_get_palette(uint8_t i) {
     return palette[i];
 }
 
-// Wrappers for existing API
-void graphics_init(g_out g_out) {
-    graphics_init_hdmi();
-}
-
-void graphics_set_palette(uint8_t i, uint32_t color888) {
-    graphics_set_palette_hdmi(i, color888);
-}
-
-void graphics_set_bgcolor(uint32_t color888) {
-    graphics_set_bgcolor_hdmi(color888);
-}
+/* Note: graphics_init(), graphics_set_palette() and graphics_set_bgcolor()
+ * are now defined in HDMI_vga.c so they can dispatch to VGA or HDMI
+ * based on the auto-detected SELECT_VGA flag. */
 
 void startVIDEO(uint8_t vol) {
     // Stub
