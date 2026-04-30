@@ -121,3 +121,21 @@ int msx_state_load(int slot) {
     printf("state: loaded slot %d (%u bytes)\n", slot, used);
     return 0;
 }
+
+int msx_state_delete(int slot) {
+    if (slot < 0 || slot >= MSX_STATE_SLOTS) return -1;
+
+    char path[48];
+    slot_path(slot, path, sizeof(path));
+
+    FRESULT fr = f_unlink(path);
+    /* FR_NO_FILE / FR_NO_PATH means the slot was already empty — treat
+     * as success so the UI doesn't have to special-case it. */
+    if (fr == FR_OK || fr == FR_NO_FILE || fr == FR_NO_PATH) {
+        printf("state: deleted slot %d (%s)\n", slot,
+               fr == FR_OK ? "removed" : "already empty");
+        return 0;
+    }
+    printf("state: delete slot %d failed (FRESULT=%d)\n", slot, fr);
+    return -2;
+}

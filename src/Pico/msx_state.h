@@ -25,4 +25,8 @@ bool msx_state_slot_exists(int slot);
 int  msx_state_save(int slot);
 int  msx_state_load(int slot);
 
+/* Delete the slot file. Returns 0 on success (including "already
+ * empty"), <0 on failure. */
+int  msx_state_delete(int slot);
+
 #endif /* MSX_STATE_H */

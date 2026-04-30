@@ -452,6 +452,7 @@ static unsigned int sc_to_xk(unsigned char sc) {
         case PSC_F11:    return 0xFFC8;
         case PSC_F12:    return 0xFFC9;
         case PSC_Tab:    return 0xFF09;  /* Tab — save/load toggle on F5 page */
+        case PSC_Delete: return 0xFFFF;  /* Delete — erase save-state slot */
         default:         return 0;
     }
 }

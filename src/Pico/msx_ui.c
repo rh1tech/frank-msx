@@ -27,6 +27,7 @@
 #define XK_Page_Up     0xFF55
 #define XK_Page_Down   0xFF56
 #define XK_Tab         0xFF09
+#define XK_Delete      0xFFFF
 
 /* Layout inside the 256×228 MSX framebuffer. Use the full 256 px of
  * screen width so long labels and footers don't run out of room.
@@ -62,6 +63,7 @@ typedef enum {
     UI_SELECT_FILE,          /* browse SD to pick a ROM/DSK to mount  */
     UI_SELECT_MAPPER,        /* after picking a cart ROM, choose mapper */
     UI_STATES,               /* Save-state slot picker (F5)            */
+    UI_STATES_CONFIRM_DELETE,/* "Delete slot N?" prompt                */
     UI_SETTINGS,
     UI_SETTINGS_CONFIRM,
     UI_BUSY,
@@ -496,6 +498,15 @@ static bool handle_states_page(unsigned int xk) {
         case XK_Down:
             if (++s_state_row >= MSX_STATE_SLOTS) s_state_row = 0;
             s_dirty = true; return true;
+        case XK_Delete:
+            /* Only prompt when the slot actually holds something —
+             * deleting an empty slot is a no-op we don't want to
+             * confirm for. */
+            if (msx_state_slot_exists(s_state_row)) {
+                s_state = UI_STATES_CONFIRM_DELETE;
+                s_dirty = true;
+            }
+            return true;
         case XK_Return: {
             int rc;
             if (s_state_action == 0) {
@@ -540,6 +551,32 @@ static bool handle_states_page(unsigned int xk) {
     return false;
 }
 
+static bool handle_states_confirm_delete(unsigned int xk) {
+    switch (xk) {
+        case XK_Escape:
+            s_state = UI_STATES;
+            s_dirty = true;
+            return true;
+        case XK_Return: {
+            int rc = msx_state_delete(s_state_row);
+            if (rc == 0) {
+                snprintf(s_msg, sizeof(s_msg),
+                         "Slot %d deleted.", s_state_row);
+            } else {
+                snprintf(s_msg, sizeof(s_msg),
+                         "Delete failed (code %d)", rc);
+            }
+            /* Back to the slot picker so the user can see the updated
+             * [used/empty] hint and continue working. */
+            s_msg_return = UI_STATES;
+            s_state = UI_MESSAGE;
+            s_dirty = true;
+            return true;
+        }
+    }
+    return false;
+}
+
 static void render_states_page(uint8_t *fb, int stride) {
     draw_chrome(fb, stride, s_state_action == 0 ? " Save state " : " Load state ");
     int x = content_x(), y = content_y();
@@ -558,7 +595,23 @@ static void render_states_page(uint8_t *fb, int stride) {
     ui_draw_string(fb, stride, x, y,
         s_state_action == 0 ? "ENTER: save selected slot"
                             : "ENTER: load selected slot", UI_COLOR_FG);
-    draw_footer(fb, stride, "UP/DN  ENTER  ESC back");
+    y += UI_LINE_H + 1;
+    ui_draw_string(fb, stride, x, y,
+        "DEL: erase selected slot", UI_COLOR_FG);
+    draw_footer(fb, stride, "UP/DN  ENTER  DEL  ESC back");
+}
+
+static void render_states_confirm_delete(uint8_t *fb, int stride) {
+    draw_chrome(fb, stride, " Delete slot ");
+    int x = content_x(), y = content_y();
+    char line[48];
+    snprintf(line, sizeof(line), "Delete save state in slot %d?",
+             s_state_row);
+    ui_draw_string(fb, stride, x, y, line, UI_COLOR_FG);
+    y += UI_LINE_H + 2;
+    ui_draw_string(fb, stride, x, y,
+        "This cannot be undone.", UI_COLOR_FG);
+    draw_footer(fb, stride, "ENTER confirm  ESC cancel");
 }
 
 /* ---- Mapper picker (cartridge only) ----------------------------- */
@@ -713,6 +766,8 @@ bool msx_ui_handle_key(unsigned int xk) {
     if (s_state == UI_SELECT_FILE)      return handle_file_page(xk);
     if (s_state == UI_SELECT_MAPPER)    return handle_mapper_page(xk);
     if (s_state == UI_STATES)           return handle_states_page(xk);
+    if (s_state == UI_STATES_CONFIRM_DELETE)
+                                        return handle_states_confirm_delete(xk);
     if (s_state == UI_SETTINGS)         return handle_settings_page(xk);
     if (s_state == UI_SETTINGS_CONFIRM) return handle_settings_confirm(xk);
     return false;
@@ -978,6 +1033,8 @@ void msx_ui_render(uint8_t *fb, int stride, int height) {
         case UI_SELECT_FILE:      render_file_page(fb, stride);        break;
         case UI_SELECT_MAPPER:    render_mapper_page(fb, stride);      break;
         case UI_STATES:           render_states_page(fb, stride);      break;
+        case UI_STATES_CONFIRM_DELETE:
+                                  render_states_confirm_delete(fb, stride); break;
         case UI_SETTINGS:         render_settings_page(fb, stride);    break;
         case UI_SETTINGS_CONFIRM: render_settings_confirm(fb, stride); break;
         case UI_BUSY:             draw_chrome(fb, stride, " Working... "); break;
