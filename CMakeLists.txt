@@ -40,20 +40,33 @@ endif()
 # -----------------------------------------------------------------------------
 # Driver options (mutually exclusive):
 #   HDMI_HSTX        RP2350 HSTX HDMI (with HDMI audio via data islands)
+#   VGA_HSTX         RP2350 HSTX VGA via DispHSTX (M2 only, no HDMI audio)
 #   VIDEO_COMPOSITE  Software composite TV (PAL/NTSC) on HDMI DAC pins
 #   (default)        PIO HDMI + runtime VGA autodetect
 #
 # The matrix below validates the user's choice against the platform —
-# HDMI_HSTX is M2-only, VIDEO_COMPOSITE is M1/M2-only.
+# HDMI_HSTX / VGA_HSTX are M2-only, VIDEO_COMPOSITE is M1/M2-only.
 option(HDMI_HSTX       "Use the RP2350 HSTX-based HDMI driver (with HDMI audio)" OFF)
+option(VGA_HSTX        "Use the RP2350 HSTX-based VGA driver via DispHSTX (M2 only)" OFF)
 option(VIDEO_COMPOSITE "Use the software composite-TV driver"                    OFF)
 
-if(HDMI_HSTX AND VIDEO_COMPOSITE)
-    message(FATAL_ERROR "HDMI_HSTX and VIDEO_COMPOSITE are mutually exclusive")
+# At most one video driver may be selected.
+set(_video_modes 0)
+foreach(_opt HDMI_HSTX VGA_HSTX VIDEO_COMPOSITE)
+    if(${_opt})
+        math(EXPR _video_modes "${_video_modes} + 1")
+    endif()
+endforeach()
+if(_video_modes GREATER 1)
+    message(FATAL_ERROR "HDMI_HSTX, VGA_HSTX, and VIDEO_COMPOSITE are mutually exclusive")
 endif()
 
 if(HDMI_HSTX AND NOT PLATFORM STREQUAL "m2")
     message(FATAL_ERROR "HDMI_HSTX is only supported on the M2 platform (got '${PLATFORM}')")
+endif()
+
+if(VGA_HSTX AND NOT PLATFORM STREQUAL "m2")
+    message(FATAL_ERROR "VGA_HSTX is only supported on the M2 platform (got '${PLATFORM}')")
 endif()
 
 if(VIDEO_COMPOSITE AND NOT (PLATFORM STREQUAL "m2" OR PLATFORM STREQUAL "m1"))
@@ -66,6 +79,10 @@ endif()
 # dispatch overhead alone consumes most of each ~32 µs window — fMSX
 # drops to ~1% speed. HDMI and VGA use direct DMA IRQs (pure SRAM path)
 # so they run fine at 252 MHz. This matches murmnes's TV default.
+# VGA_HSTX: DispHSTX calls `DispVMode320x240x8_Fast` which reconfigures
+# sys_clock to 252 MHz on its own. The adapter's CMake default tracks
+# that so the vreg/flash-timing setup in main.c lines up with what
+# DispHSTX expects when it takes over.
 if(VIDEO_COMPOSITE)
     set(_CPU_SPEED_DEFAULT "378")
 else()
@@ -116,21 +133,30 @@ add_subdirectory(drivers/ps2)
 add_subdirectory(drivers/usbhid)
 
 #-----------------------------------------------------------------------------
-# HSTX HDMI driver (copied verbatim from murmnes/frank-nes pico_hdmi/)
+# HSTX HDMI / VGA drivers (verbatim copies of murmnes/frank-nes subtrees).
+# pico_hdmi/  — HSTX HDMI scanout + data-island audio (M2 HDMI).
+# disphstx/   — DispHSTX library (M2 VGA via HSTX, handles its own Core 1).
 #-----------------------------------------------------------------------------
 if(HDMI_HSTX)
     add_subdirectory(drivers/pico_hdmi)
     add_subdirectory(drivers/i2s)
 endif()
 
+if(VGA_HSTX)
+    add_subdirectory(drivers/disphstx)
+endif()
+
 # Video + audio + PSRAM live in a single "drivers" library. The video
 # driver source swaps depending on the selected backend:
 #   HDMI_HSTX=ON        → HDMI_hstx.c + pico_hdmi/i2s subdirectories
+#   VGA_HSTX=ON         → HDMI_vga_hstx.c + drivers/disphstx (VGA via HSTX)
 #   VIDEO_COMPOSITE=ON  → HDMI_tv.c + drivers/tv (software composite)
 #   (default)           → HDMI.c + hdmi_scanline.S + HDMI_vga.c + test_pins.c
 #                         with runtime HDMI-vs-VGA autodetect
 if(HDMI_HSTX)
     set(_VIDEO_DRIVER_SRC drivers/HDMI_hstx.c)
+elseif(VGA_HSTX)
+    set(_VIDEO_DRIVER_SRC drivers/HDMI_vga_hstx.c)
 elseif(VIDEO_COMPOSITE)
     set(_VIDEO_DRIVER_SRC drivers/HDMI_tv.c)
 else()
@@ -259,6 +285,12 @@ if(HDMI_HSTX)
     target_compile_definitions(drivers PUBLIC HDMI_HSTX=1)
 endif()
 
+if(VGA_HSTX)
+    # DispHSTX owns Core 1 itself; we just need its public headers + lib.
+    target_link_libraries(drivers pico_multicore disphstx)
+    target_compile_definitions(drivers PUBLIC VGA_HSTX=1)
+endif()
+
 if(VIDEO_COMPOSITE)
     target_link_libraries(drivers pico_multicore tv_driver)
     target_compile_definitions(drivers PUBLIC VIDEO_COMPOSITE=1)
@@ -333,6 +365,11 @@ if(HDMI_HSTX)
     target_compile_definitions(frank-msx PRIVATE HDMI_HSTX=1)
     target_include_directories(frank-msx PRIVATE drivers drivers/i2s)
     target_link_libraries(frank-msx i2s_audio)
+endif()
+
+if(VGA_HSTX)
+    target_compile_definitions(frank-msx PRIVATE VGA_HSTX=1)
+    target_link_libraries(frank-msx disphstx)
 endif()
 
 if(VIDEO_COMPOSITE)

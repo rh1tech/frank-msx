@@ -11,6 +11,8 @@
 #                    1 = USB HID host keyboard/mouse/gamepad; CDC stdio off
 #   HDMI_HSTX        0 = legacy PIO HDMI driver (default)
 #                    1 = RP2350 HSTX HDMI driver (with HDMI audio) — M2 only
+#   VGA_HSTX         0 = (default)
+#                    1 = RP2350 HSTX VGA driver via DispHSTX — M2 only
 #   VIDEO_COMPOSITE  0 = HDMI / VGA output (default)
 #                    1 = Software composite-TV output (PAL/NTSC) — M1/M2 only
 #
@@ -37,6 +39,7 @@ esac
 : "${MSX_MODEL:=${5:-3}}"      # 1 = MSX1, 2 = MSX2, 3 = MSX2+ (default)
 : "${USB_HID:=0}"              # 0 = off (dev), 1 = on (release)
 : "${HDMI_HSTX:=0}"            # 0 = PIO HDMI (default), 1 = HSTX HDMI+audio (M2 only)
+: "${VGA_HSTX:=0}"             # 0 = (default), 1 = HSTX VGA via DispHSTX (M2 only)
 : "${VIDEO_COMPOSITE:=0}"      # 0 = HDMI/VGA (default), 1 = composite TV (M1/M2 only)
 
 to_onoff() {
@@ -48,15 +51,25 @@ to_onoff() {
 
 USB_HID_CMAKE=$(to_onoff "$USB_HID")
 HDMI_HSTX_CMAKE=$(to_onoff "$HDMI_HSTX")
+VGA_HSTX_CMAKE=$(to_onoff "$VGA_HSTX")
 VIDEO_COMPOSITE_CMAKE=$(to_onoff "$VIDEO_COMPOSITE")
 
-if [[ "$HDMI_HSTX_CMAKE" == "ON" && "$VIDEO_COMPOSITE_CMAKE" == "ON" ]]; then
-    echo "ERROR: HDMI_HSTX=1 and VIDEO_COMPOSITE=1 are mutually exclusive." >&2
+_video_count=0
+for v in "$HDMI_HSTX_CMAKE" "$VGA_HSTX_CMAKE" "$VIDEO_COMPOSITE_CMAKE"; do
+    [[ "$v" == "ON" ]] && _video_count=$((_video_count + 1))
+done
+if [[ "$_video_count" -gt 1 ]]; then
+    echo "ERROR: HDMI_HSTX, VGA_HSTX, and VIDEO_COMPOSITE are mutually exclusive." >&2
     exit 1
 fi
 
 if [[ "$HDMI_HSTX_CMAKE" == "ON" && "$PLATFORM" != "m2" ]]; then
     echo "ERROR: HDMI_HSTX=1 is only supported on PLATFORM=m2 (got '$PLATFORM')." >&2
+    exit 1
+fi
+
+if [[ "$VGA_HSTX_CMAKE" == "ON" && "$PLATFORM" != "m2" ]]; then
+    echo "ERROR: VGA_HSTX=1 is only supported on PLATFORM=m2 (got '$PLATFORM')." >&2
     exit 1
 fi
 
@@ -67,6 +80,9 @@ fi
 
 # CPU speed: composite-TV defaults to 378 MHz (the scanline alarm path
 # needs the extra headroom), everything else runs fine at 252 MHz.
+# VGA_HSTX also runs at 252 MHz — DispVMode320x240x8_Fast reconfigures
+# sys_clock to 252 MHz internally, so matching the pre-init frequency
+# avoids a spurious transition.
 # Override with CPU_SPEED env var or positional arg $2.
 if [[ -z "${CPU_SPEED:-}" && -z "${2:-}" ]]; then
     if [[ "$VIDEO_COMPOSITE_CMAKE" == "ON" ]]; then
@@ -87,6 +103,7 @@ cmake \
     -DMSX_MODEL=${MSX_MODEL} \
     -DUSB_HID_ENABLED=${USB_HID_CMAKE} \
     -DHDMI_HSTX=${HDMI_HSTX_CMAKE} \
+    -DVGA_HSTX=${VGA_HSTX_CMAKE} \
     -DVIDEO_COMPOSITE=${VIDEO_COMPOSITE_CMAKE} \
     ..
 

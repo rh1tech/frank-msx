@@ -81,6 +81,7 @@ mkdir -p "$RELEASE_DIR"
 # platform supports. Entries are: "<platform>:<label>:<cmake args>".
 RELEASE_TARGETS=(
     "m2:m2-hdmi-hstx:-DHDMI_HSTX=ON"
+    "m2:m2-vga-hstx:-DVGA_HSTX=ON"
     "m2:m2-hdmi-pio:"
     "m2:m2-tv:-DVIDEO_COMPOSITE=ON"
     "m1:m1-hdmi-pio:"

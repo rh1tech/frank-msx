@@ -85,7 +85,9 @@ SERIAL_PID=$!
 
 # Firmware prints boot banner + ROM attempts over ~6 s. Grab a VGA frame
 # once the firmware has settled into its post-init state.
-sleep 7
+# Override with VGA_DELAY env var to capture later in boot (after welcome
+# screen clears / emulation is drawing MSX frames).
+sleep "${VGA_DELAY:-7}"
 
 # 4. One JPEG from the USB VGA capture card. Request 640x480 to match the
 # driver's native VGA mode.

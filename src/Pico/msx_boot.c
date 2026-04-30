@@ -170,10 +170,23 @@ static bool any_input_pressed(void) {
     /* USB gamepads — any button. */
     if (usbhid_wrapper_get_joystick() != 0) pressed = true;
 
-    /* NES/SNES gamepad — any bit set in either pad. */
 #ifdef NESPAD_GPIO_CLK
+    /* Unplugged NES/SNES ports on M2 float their data pin high, which
+     * the driver reads back as the "all DPAD bits set" pattern
+     * (0x555555 — every DPAD_* bit simultaneously). That can't happen
+     * on a real pad, so treat it as "nothing connected" and ignore it
+     * — otherwise the welcome screen exits immediately on boards with
+     * only one pad plugged in (or none). */
+    const uint32_t NESPAD_BTN_MASK =
+        DPAD_LEFT | DPAD_RIGHT | DPAD_UP | DPAD_DOWN |
+        DPAD_A | DPAD_B | DPAD_X | DPAD_Y |
+        DPAD_SELECT | DPAD_START | DPAD_LT | DPAD_RT;
+    const uint32_t NESPAD_IDLE_PATTERN = 0x555555u;
     nespad_read();
-    if (nespad_state != 0 || nespad_state2 != 0) pressed = true;
+    uint32_t s1m = nespad_state  & NESPAD_BTN_MASK;
+    uint32_t s2m = nespad_state2 & NESPAD_BTN_MASK;
+    if ((s1m != 0 && s1m != NESPAD_IDLE_PATTERN) ||
+        (s2m != 0 && s2m != NESPAD_IDLE_PATTERN)) pressed = true;
 #endif
     return pressed;
 }
@@ -327,8 +340,8 @@ _Noreturn void msx_boot_fatal(msx_boot_err_t reason, const char *detail) {
             line2    = "with /MSX/ holding BIOS ROMs.";
             break;
         case MSX_BOOT_ERR_NO_DIR:
-            headline = "/MSX DIRECTORY MISSING";
-            line1    = "Create a /MSX folder on the SD card";
+            headline = "MSX DIRECTORY MISSING";
+            line1    = "Create a MSX folder on the SD card";
             line2    = "and drop BIOS ROMs + games inside.";
             break;
         case MSX_BOOT_ERR_NO_BIOS:

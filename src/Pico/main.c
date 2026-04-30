@@ -24,6 +24,9 @@
 #include "psram_allocator.h"
 #if defined(HDMI_HSTX)
 #include "i2s_audio.h"
+#elif defined(VGA_HSTX)
+/* VGA HSTX: DispHSTX owns Core 1 for VGA scanout. No HDMI audio path
+ * (VGA has no data-island capability); audio falls back to PWM. */
 #elif defined(VIDEO_COMPOSITE)
 /* TV path: Core 1 is owned by the scanline timer, so the ring-fed I2S
  * render loop is never started. audio.h isn't included at all — we
@@ -187,6 +190,12 @@ void audio_dispatch_push_samples(const int16_t *buf, int count) {
     }
     /* Default (MSX_AUDIO_HDMI). */
     hdmi_hstx_push_samples(buf, count);
+#elif defined(VGA_HSTX)
+    /* VGA HSTX: DispHSTX owns Core 1, so the I2S render core can't run.
+     * No HDMI audio either (VGA has no data islands). All modes collapse
+     * onto PWM, same as the composite-TV build. */
+    ensure_pwm_audio_initialized();
+    pwm_audio_push_samples(buf, count);
 #elif defined(VIDEO_COMPOSITE)
     /* Composite-TV build: Core 1 is the scanline timer; there's no I2S
      * render core and no HDMI audio path. Everything falls back to PWM. */
@@ -229,6 +238,9 @@ void audio_dispatch_fill_silence(int count) {
         return;
     }
     hdmi_hstx_fill_silence(count);
+#elif defined(VGA_HSTX)
+    ensure_pwm_audio_initialized();
+    pwm_audio_fill_silence(count);
 #elif defined(VIDEO_COMPOSITE)
     ensure_pwm_audio_initialized();
     pwm_audio_fill_silence(count);
@@ -243,7 +255,7 @@ void audio_dispatch_fill_silence(int count) {
 /* ---- Render core (Core 1): boots audio + drains the ring ------------- */
 static volatile bool core1_ready = false;
 
-#if !defined(HDMI_HSTX) && !defined(VIDEO_COMPOSITE) && defined(HAS_I2S)
+#if !defined(HDMI_HSTX) && !defined(VGA_HSTX) && !defined(VIDEO_COMPOSITE) && defined(HAS_I2S)
 void __time_critical_func(render_core)(void) {
     static i2s_config_t i2s_cfg;
     i2s_cfg = i2s_get_default_config();
@@ -278,7 +290,7 @@ void __time_critical_func(render_core)(void) {
         i2s_dma_write(&i2s_cfg, (const int16_t *)chunk);
     }
 }
-#endif /* !HDMI_HSTX && !VIDEO_COMPOSITE */
+#endif /* !HDMI_HSTX && !VGA_HSTX && !VIDEO_COMPOSITE */
 
 /* ---- Entry point ----------------------------------------------------- */
 
@@ -349,6 +361,32 @@ int main(void) {
     psram_reset();
     printf("PSRAM initialized (8 MB)\n");
 
+    /* Clear framebuffers before any graphics init. */
+    memset(screen_mem, 0, sizeof(screen_mem));
+
+#if defined(VGA_HSTX)
+    /* VGA_HSTX: bring DispHSTX up FIRST (before SD + PS/2) so the VGA
+     * scanout starts producing sync immediately at boot — otherwise the
+     * monitor sees ~2-3 s of no-signal while we init SD / PS/2, and
+     * only locks once InitMachine() eventually gets around to drawing.
+     * Matches murmnes's ordering (vga_hstx_start before any f_mount).
+     *
+     * DispHSTX internally bumps clk_peri to ~150 MHz; we restore it to
+     * the SDK default (PLL_USB = 48 MHz) immediately after so the SD
+     * driver's lazy spi_init() downstream sees the expected clk_peri. */
+    printf("Initializing video output (VGA HSTX, pre-SD)...\n");
+    graphics_init(g_out_HDMI);
+    clock_configure_undivided(clk_peri,
+                              0,
+                              CLOCKS_CLK_PERI_CTRL_AUXSRC_VALUE_CLKSRC_PLL_USB,
+                              48000000);
+    graphics_set_buffer(SCREEN[0]);
+    graphics_set_res(FB_W, FB_H);
+    graphics_set_shift((320 - FB_W) / 2, 0);
+    graphics_set_mode(GRAPHICSMODE_DEFAULT);
+    printf("Video output initialized\n");
+#endif
+
     /* 4. SD card.
      *
      * The SD probe runs early so we can surface a user-visible error
@@ -363,9 +401,6 @@ int main(void) {
         printf("SD card mounted\n");
     }
 
-    /* 5. Clear framebuffers */
-    memset(screen_mem, 0, sizeof(screen_mem));
-
     /* 6a. PS/2 keyboard + mouse, BEFORE HDMI. The PS/2 bit-bang TX on
      * GPIO 0/1 electrically perturbs HDMI TMDS on GPIO 12-19; bringing
      * PS/2 up first means HDMI is never active during the transient.
@@ -379,6 +414,7 @@ int main(void) {
         printf("PS/2 mouse not detected (inactive)\n");
     }
 
+#if !defined(VGA_HSTX)
     /* 6b. Video output (Core 0 init, Core 1 runs audio).
      *
      * On the PIO HDMI path the M2 board shares the HDMI connector with
@@ -388,8 +424,9 @@ int main(void) {
      * graphics_init() brings up the VGA PIO/DMA pipeline instead of
      * HDMI TMDS. When a real HDMI cable is plugged in, the pins float
      * independently, SELECT_VGA stays false, and the TMDS path runs
-     * unchanged. The HSTX build skips this — HDMI is the only mode. */
-#ifndef HDMI_HSTX
+     * unchanged. The HSTX build skips this — HDMI is the only mode.
+     * VGA_HSTX already ran graphics_init before the SD mount, above. */
+#if !defined(HDMI_HSTX) && !defined(VIDEO_COMPOSITE)
     {
         int link = testPins(HDMI_BASE_PIN, HDMI_BASE_PIN + 1);
         SELECT_VGA = (link == 0) || (link == 0x1F);
@@ -404,6 +441,7 @@ int main(void) {
     graphics_set_shift((320 - FB_W) / 2, 0);  /* centre horizontally */
     graphics_set_mode(GRAPHICSMODE_DEFAULT);
     printf("Video output initialized\n");
+#endif /* !VGA_HSTX */
 
     /* 7. NES pad (GPIO 20/21/26 on M2 — far from HDMI, safe after HDMI). */
 #ifdef NESPAD_GPIO_CLK
@@ -445,6 +483,12 @@ int main(void) {
      * from WriteAudio() (same model as murmnes's default HDMI audio). */
     core1_ready = true;
     printf("HDMI_HSTX: Core 1 running HSTX scanout, audio on HDMI\n");
+#elif defined(VGA_HSTX)
+    /* VGA HSTX: DispHSTX already claimed Core 1 from graphics_init() for
+     * the VGA scanout ISR. No HDMI data-island channel on VGA, so audio
+     * runs on PWM from Core 0. */
+    core1_ready = true;
+    printf("VGA_HSTX: Core 1 running DispHSTX scanout, audio on PWM\n");
 #elif defined(VIDEO_COMPOSITE)
     /* Composite-TV path: Core 1 is owned by the TV driver (claimed in
      * HDMI_tv.c's graphics_init() call above). Its 30 kHz scanline
