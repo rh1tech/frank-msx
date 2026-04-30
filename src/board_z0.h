@@ -39,6 +39,9 @@
 #define NESPAD_GPIO_LATCH 5
 #define NESPAD_GPIO_DATA  7
 
+/* ---- Cassette tape input (free GPIO — EAR / CAS-IN) ---- */
+#define TAPE_IN_PIN 22
+
 /* ---- PWM audio ---- */
 #define PWM_PIN0 10
 #define PWM_PIN1 11

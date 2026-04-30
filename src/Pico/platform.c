@@ -38,6 +38,7 @@
 
 #include "msx_ui.h"
 #include "msx_settings.h"
+#include "msx_tape.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -356,6 +357,153 @@ enum {
 #define XKBD_SET(K) XKeyState[Keys[K][0]] &= ~Keys[K][1]
 #define XKBD_RES(K) XKeyState[Keys[K][0]] |=  Keys[K][1]
 
+/* Direct matrix press/release for (row,mask) — used by the PS/2 → MSX
+ * layout remapper below, which needs to target cells that fMSX's
+ * Keys[] table misplaces for the Japanese MSX keyboard. */
+#define XMATRIX_SET(R,M) XKeyState[(R)] &= ~(M)
+#define XMATRIX_RES(R,M) XKeyState[(R)] |=  (M)
+#define SHIFT_ROW  6
+#define SHIFT_MASK 0x01
+
+/* ---- PS/2 → MSX layout remap (Japanese MSX keyboard) --------------
+ *
+ * The MSX key matrix is *physically* identical across regions — 11
+ * rows × 8 bits of "is key N pressed?" — but the BIOS in each region
+ * decodes those cells into different characters. fMSX's Keys[] table
+ * is tuned for a European MSX (where Shift+`;` on the host produces
+ * `:` on the MSX), but our default BIOS is MSX2P.ROM, which is the
+ * Japanese layout: Shift+`;` on MSX = `+`, not `:`.
+ *
+ * To make host typing produce the characters the user expects, we
+ * intercept the shifted form of a small set of punctuation keys and
+ * directly poke the correct cell. The override forces the Shift
+ * matrix bit (row 6 bit 0) into the state required for the target
+ * character, independent of whether the user's physically holding
+ * Shift, and snaps it back on key release.
+ *
+ * Matrix reference (Japanese MSX — MSX2P.ROM region):
+ *   row 0 .0-.7  = 0 1 2 3 4 5 6 7
+ *   row 1 .0-.7  = 8 9 - ^ \ @ [ ;
+ *   row 2 .0-.7  = ] : , . / _ A B
+ */
+
+/* Target cell for a remapped key. `force_shift`:
+ *   1 -> press MSX Shift for the duration of this key
+ *   0 -> release MSX Shift for the duration of this key
+ *   -1 -> don't touch Shift (rare — for keys whose cell matches
+ *         whatever Shift the host is sending).
+ */
+typedef struct {
+    uint8_t  sc;            /* PS/2 scancode (PSC_*) */
+    uint8_t  want_shift;    /* 1 = fires only when Shift is held, 0 = only unshifted */
+    uint8_t  msx_row;
+    uint8_t  msx_mask;
+    int8_t   force_shift;   /* -1 / 0 / 1 */
+} ps2_jp_remap_t;
+
+/* Japanese MSX matrix (MSX2P.ROM region). Unshifted / shifted per cell:
+ *
+ *   row.bit  unshifted  shifted
+ *   0.0      0
+ *   0.1      1          !
+ *   0.2      2          "
+ *   0.3      3          #
+ *   0.4      4          $
+ *   0.5      5          %
+ *   0.6      6          &
+ *   0.7      7          '
+ *   1.0      8          (
+ *   1.1      9          )
+ *   1.2      -          =
+ *   1.3      ^          ~
+ *   1.4      \          |
+ *   1.5      @          `
+ *   1.6      [          {
+ *   1.7      ;          +
+ *   2.0      ]          }
+ *   2.1      :          *
+ *   2.2      ,          <
+ *   2.3      .          >
+ *   2.4      /          ?
+ *   2.5      _          (blank)
+ *
+ * For each (PS/2 scancode, host Shift state) pair in the override
+ * table below we specify the MSX matrix cell and what the MSX-side
+ * Shift must be. Host Shift state is swallowed by this code path —
+ * only force_shift drives the MSX Shift bit.
+ *
+ * Columns:  scancode, host_shift, msx_row, msx_mask, force_shift
+ */
+static const ps2_jp_remap_t PS2_JP_REMAP[] = {
+    /* Shift+digit on a US PS/2 keyboard -> ASCII (!,@,#,$,%,^,&,*,(,))
+     * but those characters land on different cells on a Japanese MSX. */
+    { PSC_1,       1, 0, 0x02, 1 },   /* Shift+1 -> '!' */
+    { PSC_2,       1, 0, 0x04, 1 },   /* Shift+2 -> '"' (quote)         */
+    { PSC_3,       1, 0, 0x08, 1 },   /* Shift+3 -> '#' */
+    { PSC_4,       1, 0, 0x10, 1 },   /* Shift+4 -> '$' */
+    { PSC_5,       1, 0, 0x20, 1 },   /* Shift+5 -> '%' */
+    { PSC_6,       1, 1, 0x08, 1 },   /* Shift+6 -> '^' (MSX '^'/'~' key) */
+    { PSC_7,       1, 0, 0x40, 1 },   /* Shift+7 -> '&' */
+    { PSC_8,       1, 2, 0x01, 1 },   /* Shift+8 -> '*'  (MSX :/* cell)   */
+    { PSC_9,       1, 1, 0x00, 1 },   /* Shift+9 -> '(' */
+    { PSC_0,       1, 1, 0x02, 1 },   /* Shift+0 -> ')' */
+    /* Semicolon key: unshifted ';' lives at the same cell fMSX's
+     * Keys[] uses (so unshifted path is a no-op but we keep it here
+     * to make sure host Shift state doesn't bleed in). Shift+';' must
+     * hit the ':' cell (row 2 bit 1, unshifted on MSX). */
+    { PSC_Semi,    0, 1, 0x80, 0 },   /* ';' */
+    { PSC_Semi,    1, 2, 0x01, 0 },   /* Shift+';' -> ':' */
+    /* Apostrophe key: host `'` -> MSX `'` = Shift+7 cell, host `"` ->
+     * MSX `"` = Shift+2 cell. Both force Shift on the MSX side. */
+    { PSC_Quote,   0, 0, 0x80, 1 },   /* '\'' (apostrophe) */
+    { PSC_Quote,   1, 0, 0x04, 1 },   /* Shift+'\'' -> '"' */
+    /* Minus/equals: host `-` -> MSX `-`, host `=` -> MSX Shift+`-`
+     * (row 1 bit 2), host Shift+`-` -> `_` (row 2 bit 5), host
+     * Shift+`=` -> `+` (MSX Shift+`;` = row 1 bit 7 + Shift). */
+    { PSC_Minus,   0, 1, 0x04, 0 },   /* '-' */
+    { PSC_Minus,   1, 2, 0x20, 0 },   /* Shift+'-' -> '_' */
+    { PSC_Equals,  0, 1, 0x04, 1 },   /* '=' */
+    { PSC_Equals,  1, 1, 0x80, 1 },   /* Shift+'=' -> '+' (MSX Shift+';') */
+    /* Brackets. Host `[` -> MSX `[` (row 1 bit 6), host `]` -> MSX `]`
+     * (row 2 bit 0). Shifted forms `{` `}` are Shift+same cell. */
+    { PSC_LBr,     0, 1, 0x40, 0 },
+    { PSC_LBr,     1, 1, 0x40, 1 },
+    { PSC_RBr,     0, 2, 0x01, 0 },
+    { PSC_RBr,     1, 2, 0x01, 1 },
+    /* Backslash / pipe — MSX ¥/| key at row 1 bit 4. */
+    { PSC_BkSlash, 0, 1, 0x10, 0 },
+    { PSC_BkSlash, 1, 1, 0x10, 1 },
+    /* Comma / period / slash and their shifted forms. */
+    { PSC_Comma,   0, 2, 0x04, 0 },
+    { PSC_Comma,   1, 2, 0x04, 1 },   /* Shift+',' -> '<' */
+    { PSC_Period,  0, 2, 0x08, 0 },
+    { PSC_Period,  1, 2, 0x08, 1 },   /* Shift+'.' -> '>' */
+    { PSC_Slash,   0, 2, 0x10, 0 },
+    { PSC_Slash,   1, 2, 0x10, 1 },   /* Shift+'/' -> '?' */
+    /* Tilde/backtick key (top-left of PS/2 keyboard). MSX has no
+     * dedicated cell for backtick — it's Shift+`@`; `~` is Shift+`^`. */
+    { PSC_Tilde,   0, 1, 0x20, 1 },   /* '`' -> Shift+'@' */
+    { PSC_Tilde,   1, 1, 0x08, 1 },   /* Shift+'`' -> '~' -> Shift+'^' */
+};
+#define PS2_JP_REMAP_COUNT ((int)(sizeof(PS2_JP_REMAP) / sizeof(PS2_JP_REMAP[0])))
+
+/* Track which remap entry is currently "held" for each PS/2 scancode
+ * so the release event targets the same matrix cell the press fired.
+ * Lookup is keyed by scancode — there are ≤256 of them and only a
+ * handful in use, so a flat array is fine. Stores index+1 (0 = none). */
+static uint8_t s_jp_remap_held[256];
+
+/* Find the remap row that matches scancode + current shift state.
+ * Returns index or -1. */
+static int find_jp_remap(uint8_t sc, bool shift) {
+    for (int i = 0; i < PS2_JP_REMAP_COUNT; ++i) {
+        if (PS2_JP_REMAP[i].sc == sc &&
+            PS2_JP_REMAP[i].want_shift == (shift ? 1 : 0))
+            return i;
+    }
+    return -1;
+}
+
 /* Map PS/2 scancode → KBD_* constant (returns 0 if no mapping). */
 static unsigned char sc_to_msx(unsigned char sc) {
     switch (sc) {
@@ -459,15 +607,17 @@ static unsigned int sc_to_xk(unsigned char sc) {
 
 /* Track Ctrl+Alt state across poll_inputs() calls so we can recognise
  * Ctrl+Alt+Del as a host-level "reset the MSX" chord. */
-static bool s_ctrl_down = false;
-static bool s_alt_down  = false;
+static bool s_ctrl_down  = false;
+static bool s_alt_down   = false;
+static bool s_shift_down = false;   /* Host Shift — used by remapper */
 
 /* Dispatch a single scancode event (press/release) through the same
  * path regardless of whether it came from PS/2 or USB HID. */
 static void handle_key_event(int pressed, unsigned char sc) {
     /* Track modifier keys before anything else. */
-    if (sc == PSC_LCtrl || sc == PSC_RCtrl) s_ctrl_down = pressed;
-    if (sc == PSC_LAlt  || sc == PSC_RAlt ) s_alt_down  = pressed;
+    if (sc == PSC_LCtrl  || sc == PSC_RCtrl)  s_ctrl_down  = pressed;
+    if (sc == PSC_LAlt   || sc == PSC_RAlt)   s_alt_down   = pressed;
+    if (sc == PSC_LShift || sc == PSC_RShift) s_shift_down = pressed;
 
     /* Ctrl+Alt+Del -> MSX hard reset. Route through the settings
      * layer so any dirty disks / SRAM get flushed before reset. */
@@ -499,6 +649,37 @@ static void handle_key_event(int pressed, unsigned char sc) {
             if (xk) msx_ui_handle_key(xk);
         }
         return;
+    }
+
+    /* JP-layout override. Press: select the row matching current host
+     * Shift, fire its cell + force-set MSX Shift. Release: use the
+     * row that was remembered at press time so asymmetric shift
+     * timing (user releases Shift before the key) still releases the
+     * same cell. */
+    if (pressed) {
+        int idx = find_jp_remap(sc, s_shift_down);
+        if (idx >= 0) {
+            const ps2_jp_remap_t *r = &PS2_JP_REMAP[idx];
+            /* MSX Shift state: force per entry. Release first so a
+             * transition 1->0 clears the bit before we fire the cell. */
+            if (r->force_shift == 0)      XMATRIX_RES(SHIFT_ROW, SHIFT_MASK);
+            else if (r->force_shift == 1) XMATRIX_SET(SHIFT_ROW, SHIFT_MASK);
+            XMATRIX_SET(r->msx_row, r->msx_mask);
+            s_jp_remap_held[sc] = (uint8_t)(idx + 1);
+            return;
+        }
+    } else {
+        uint8_t held = s_jp_remap_held[sc];
+        if (held) {
+            const ps2_jp_remap_t *r = &PS2_JP_REMAP[held - 1];
+            XMATRIX_RES(r->msx_row, r->msx_mask);
+            /* Restore MSX Shift to match host Shift state so the next
+             * unshifted key doesn't bleed the forced state. */
+            if (s_shift_down) XMATRIX_SET(SHIFT_ROW, SHIFT_MASK);
+            else              XMATRIX_RES(SHIFT_ROW, SHIFT_MASK);
+            s_jp_remap_held[sc] = 0;
+            return;
+        }
     }
 
     unsigned char k = sc_to_msx(sc);
@@ -721,6 +902,7 @@ int InitMachine(void) {
     if (SyncFreq > 0 && !SetSyncTimer((Mode & MSX_PAL) ? 50 : 60)) SyncFreq = 0;
 
     msx_ui_init();
+    msx_tape_init();
     /* Apply default visual settings (pass-through filter, CRT off).
      * Re-applied via msx_settings_apply_visual() whenever the user
      * touches Scanlines or Color filter in the Settings dialog. */

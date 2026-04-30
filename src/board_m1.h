@@ -39,6 +39,9 @@
 #define NESPAD_GPIO_LATCH 15
 #define NESPAD_GPIO_DATA  16
 
+/* ---- Cassette tape input (free GPIO — EAR / CAS-IN) ---- */
+#define TAPE_IN_PIN 22
+
 /* ---- I2S audio ---- */
 #define I2S_DATA_PIN       26
 #define I2S_CLOCK_PIN_BASE 27

@@ -336,6 +336,7 @@ set(PICO_PORT
     src/Pico/msx_settings.c
     src/Pico/msx_state.c
     src/Pico/msx_boot.c
+    src/Pico/msx_tape.c
 )
 
 add_executable(frank-msx

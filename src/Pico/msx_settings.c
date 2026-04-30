@@ -8,6 +8,7 @@
 
 #include "msx_settings.h"
 #include "board_config.h"   /* brings in HAS_I2S / HAS_PWM / platform defines */
+#include "msx_tape.h"
 #include "MSX.h"
 #include "HDMI.h"
 #include "ff.h"
@@ -41,6 +42,7 @@ msx_settings_t g_settings = {
     .fixed_font   = 0,
     .fmpac        = 1,                 /* try to load FMPAC.ROM on boot */
     .cheats       = 0,
+    .turbo_tape   = 0,                 /* real-time tape waveform off */
 };
 
 /* ---- value tables ---------------------------------------------------- */
@@ -264,6 +266,11 @@ void msx_settings_apply_visual(void) {
      * and re-applies / reverts the active cheat patches in the MSX
      * address space. Safe to call every settings touch. */
     Cheats(g_settings.cheats ? 1 : 0);
+
+    /* Tape waveform generator (turbo loader). Off by default so BIOS
+     * TAPION traps work unmolested; flip on for games with custom
+     * loaders that poll PSG[14] bit 7 directly. */
+    msx_tape_set_waveform_enabled(g_settings.turbo_tape != 0);
 }
 
 /* ---- compose + apply ------------------------------------------------- */
@@ -394,6 +401,7 @@ static const ini_field_t INI_FIELDS[] = {
     { "fixed_font",   &g_settings.fixed_font,  2  },
     { "fmpac",        &g_settings.fmpac,       2  },
     { "cheats",       &g_settings.cheats,      2  },
+    { "turbo_tape",   &g_settings.turbo_tape,  2  },
 };
 #define INI_FIELD_COUNT ((int)(sizeof(INI_FIELDS)/sizeof(INI_FIELDS[0])))
 

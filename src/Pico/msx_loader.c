@@ -5,6 +5,7 @@
 
 #include "msx_loader.h"
 #include "msx_settings.h"
+#include "msx_tape.h"
 #include "MSX.h"
 #include "FDIDisk.h"
 #include "ff.h"
@@ -78,6 +79,7 @@ msx_entry_kind_t msx_classify(const char *name) {
     if (ext_ieq(e, "rom") || ext_ieq(e, "mx1") || ext_ieq(e, "mx2")
         || ext_ieq(e, "col") || ext_ieq(e, "ri")) return MSX_ENTRY_ROM;
     if (ext_ieq(e, "dsk") || ext_ieq(e, "dsr")) return MSX_ENTRY_DISK;
+    if (ext_ieq(e, "cas")) return MSX_ENTRY_TAPE;
     return MSX_ENTRY_UNKNOWN;
 }
 
@@ -176,6 +178,7 @@ void msx_entry_path(int idx, char *buf, size_t buf_sz) {
  * outlive the mount call. */
 static char g_cart_paths[2][MSX_MAX_PATH_LEN + MSX_MAX_FILENAME_LEN + 2];
 static char g_disk_paths[2][MSX_MAX_PATH_LEN + MSX_MAX_FILENAME_LEN + 2];
+static char g_tape_path   [MSX_MAX_PATH_LEN + MSX_MAX_FILENAME_LEN + 2];
 
 /* Mount state tracked by the UI so it can display "currently loaded"
  * and decide whether to show Eject / Save menu entries. Updated by
@@ -223,6 +226,7 @@ const char *msx_mounted_name(msx_target_t target) {
         case MSX_TARGET_CART_B: return g_cart_loaded[1] ? g_cart_paths[1] : NULL;
         case MSX_TARGET_DISK_A: return g_disk_loaded[0] ? g_disk_paths[0] : NULL;
         case MSX_TARGET_DISK_B: return g_disk_loaded[1] ? g_disk_paths[1] : NULL;
+        case MSX_TARGET_TAPE:   return msx_tape_mounted_name();
         default:                 return NULL;
     }
 }
@@ -313,6 +317,13 @@ int msx_mount_entry_with_mapper(int idx, msx_target_t target, int mapper,
             g_disk_dirty[drv]  = false;
             return 0;
         }
+        case MSX_TARGET_TAPE: {
+            if (e->kind != MSX_ENTRY_TAPE) return -2;
+            msx_entry_path(idx, g_tape_path, sizeof(g_tape_path));
+            int rc = msx_tape_mount(g_tape_path);
+            if (rc != 0) { g_tape_path[0] = 0; return rc < 0 ? -3 : rc; }
+            return 0;
+        }
         default:
             return -1;
     }
@@ -350,6 +361,12 @@ int msx_eject(msx_target_t target) {
             g_disk_loaded[drv] = false;
             g_disk_dirty[drv]  = false;
             g_disk_paths[drv][0] = 0;
+            return 0;
+        }
+        case MSX_TARGET_TAPE: {
+            if (!msx_tape_mounted_name()) return -1;
+            msx_tape_eject();
+            g_tape_path[0] = 0;
             return 0;
         }
         default:

@@ -6,6 +6,7 @@
 #include "msx_loader.h"
 #include "msx_settings.h"
 #include "msx_state.h"
+#include "msx_tape.h"
 #include "ui_draw.h"
 #include "board_config.h"
 #include "HDMI.h"
@@ -52,6 +53,7 @@ static const char *TARGET_LABELS[TARGET_PAGE_ROWS] = {
     "Cartridge B",
     "Disk A",
     "Disk B",
+    "Cassette tape",
     "Save current state",
     "Load state",
 };
@@ -226,6 +228,7 @@ static int list_row_to_entry(int row, bool *is_parent) {
 static bool target_accepts(msx_target_t t, msx_entry_kind_t k) {
     if (t == MSX_TARGET_CART_A || t == MSX_TARGET_CART_B) return k == MSX_ENTRY_ROM;
     if (t == MSX_TARGET_DISK_A || t == MSX_TARGET_DISK_B) return k == MSX_ENTRY_DISK;
+    if (t == MSX_TARGET_TAPE) return k == MSX_ENTRY_TAPE;
     return false;
 }
 
@@ -268,12 +271,14 @@ static bool handle_target_page(unsigned int xk) {
  * and whether something is currently mounted. We build a tiny
  * per-action descriptor so the handler and renderer agree. */
 typedef enum {
-    SLOT_ACT_INSERT = 0,      /* cart: insert + reset, disk: insert    */
-    SLOT_ACT_CHANGE,          /* same as INSERT but shown as "Change"   */
+    SLOT_ACT_INSERT = 0,      /* cart: insert + reset, disk/tape: insert */
+    SLOT_ACT_CHANGE,          /* same as INSERT but shown as "Change"    */
     SLOT_ACT_EJECT,
     SLOT_ACT_CREATE_BLANK,    /* disk only */
     SLOT_ACT_SAVE_DSK,        /* disk only */
     SLOT_ACT_SAVE_FDI,        /* disk only */
+    SLOT_ACT_REWIND,          /* tape only */
+    SLOT_ACT_TURBO_TOGGLE,    /* tape only — toggle waveform generator */
     SLOT_ACT_CANCEL,
 } slot_act_kind_t;
 
@@ -282,23 +287,52 @@ typedef struct {
     const char     *label;
 } slot_act_row_t;
 
-#define MAX_SLOT_ACTS 7
+#define MAX_SLOT_ACTS 8
+
+/* Human-friendly noun for the slot-action labels. */
+static const char *slot_noun_for(msx_target_t t) {
+    switch (t) {
+        case MSX_TARGET_DISK_A:
+        case MSX_TARGET_DISK_B: return "disk";
+        case MSX_TARGET_TAPE:   return "tape";
+        default:                return "cartridge";
+    }
+}
 
 static int build_slot_actions(slot_act_row_t out[MAX_SLOT_ACTS]) {
     msx_target_t t = (msx_target_t)s_target;
     bool is_disk   = (t == MSX_TARGET_DISK_A || t == MSX_TARGET_DISK_B);
+    bool is_tape   = (t == MSX_TARGET_TAPE);
     bool loaded    = msx_mounted_name(t) != NULL;
     int n = 0;
+    const char *noun = slot_noun_for(t);
 
     if (loaded) {
-        out[n++] = (slot_act_row_t){ SLOT_ACT_CHANGE, is_disk ? "Change disk" : "Change cartridge" };
+        /* "Change <noun>" / "Eject" are common to all three kinds.
+         * Disk gets extra save options; tape gets Rewind + turbo. */
+        static char change_label[24];
+        snprintf(change_label, sizeof(change_label), "Change %s", noun);
+        out[n++] = (slot_act_row_t){ SLOT_ACT_CHANGE, change_label };
         out[n++] = (slot_act_row_t){ SLOT_ACT_EJECT,  "Eject" };
         if (is_disk) {
             out[n++] = (slot_act_row_t){ SLOT_ACT_SAVE_DSK, "Save as .DSK" };
             out[n++] = (slot_act_row_t){ SLOT_ACT_SAVE_FDI, "Save as .FDI" };
         }
+        if (is_tape) {
+            out[n++] = (slot_act_row_t){ SLOT_ACT_REWIND, "Rewind" };
+            /* Label is regenerated on every render so it reflects the
+             * live waveform-generator state. Points at a static buffer
+             * — there's only ever one turbo row on screen at a time. */
+            static char turbo_label[32];
+            snprintf(turbo_label, sizeof(turbo_label),
+                     "Turbo loader: %s",
+                     msx_tape_get_waveform_enabled() ? "On" : "Off");
+            out[n++] = (slot_act_row_t){ SLOT_ACT_TURBO_TOGGLE, turbo_label };
+        }
     } else {
-        out[n++] = (slot_act_row_t){ SLOT_ACT_INSERT, is_disk ? "Insert disk" : "Insert cartridge" };
+        static char insert_label[24];
+        snprintf(insert_label, sizeof(insert_label), "Insert %s", noun);
+        out[n++] = (slot_act_row_t){ SLOT_ACT_INSERT, insert_label };
         if (is_disk)
             out[n++] = (slot_act_row_t){ SLOT_ACT_CREATE_BLANK, "Create new blank disk" };
     }
@@ -361,6 +395,25 @@ static void perform_slot_action(slot_act_kind_t k) {
             report_status(msx_save_disk(t, 4  /* FMT_FDI */),
                           "Save failed",
                           "Saved as .FDI under /MSX/.");
+            return;
+        case SLOT_ACT_REWIND:
+            /* Only reachable from the tape slot. No SD/PSRAM work — just
+             * reset the tape cursor. */
+            msx_tape_rewind();
+            snprintf(s_msg, sizeof(s_msg), "Tape rewound.");
+            s_state = UI_MESSAGE;
+            s_msg_return = UI_SLOT_ACTION;
+            s_dirty = true;
+            return;
+        case SLOT_ACT_TURBO_TOGGLE:
+            /* Flip the real-time waveform generator. Route through the
+             * settings layer so the toggle is persisted to msx.ini and
+             * survives a reboot. Stays on the slot-action page so the
+             * user can immediately verify the new state in the label. */
+            g_settings.turbo_tape = !g_settings.turbo_tape;
+            msx_tape_set_waveform_enabled(g_settings.turbo_tape != 0);
+            msx_settings_save();
+            s_dirty = true;
             return;
         case SLOT_ACT_CANCEL:
             s_state = UI_SELECT_TARGET;
@@ -723,7 +776,10 @@ static bool handle_file_page(unsigned int xk) {
 
             s_state = UI_BUSY;
             s_dirty = true;
-            msx_ui_show_busy("Loading disk image...");
+            const char *busy_msg = (s_target == MSX_TARGET_TAPE)
+                                       ? "Loading tape..."
+                                       : "Loading disk image...";
+            msx_ui_show_busy(busy_msg);
             int rc = msx_mount_entry(e, (msx_target_t)s_target,
                                      s_mount_reset_after);
             if (rc == 0) {

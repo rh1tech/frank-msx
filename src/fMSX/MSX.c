@@ -56,6 +56,20 @@
 #define chdir(path) ChangeDir(path)
 #endif
 
+/* Tape input hook — Pico port implements this in msx_tape.c to stream
+ * a mounted .CAS (or sample the TAPE_IN_PIN GPIO) into PSG register 14
+ * bit 7 (cassette input on real MSX hardware). Weak stub keeps the
+ * standalone fMSX build linking; BIOS tape traps in Patch.c still
+ * work via CasStream regardless. */
+byte fmsx_tape_psg_bit7(void);
+__attribute__((weak)) byte fmsx_tape_psg_bit7(void) { return 0; }
+
+/* Tape motor gate — PPIOut() raises/lowers this in sync with PPI port C
+ * bit 4. Weak stub so the standalone build links; the Pico port uses
+ * this to freeze the cassette waveform while MOTOR is OFF. */
+void fmsx_tape_set_motor(int on);
+__attribute__((weak)) void fmsx_tape_set_motor(int on) { (void)on; }
+
 /** User-defined parameters for fMSX *************************/
 int  Mode        = MSX_MSX2|MSX_NTSC|MSX_MSXDOS2|MSX_GUESSA|MSX_GUESSB;
 extern int InMenu;                 /* 1 while loader overlay is up */
@@ -1224,8 +1238,12 @@ case 0xA2: /* PSG input port */
       case 4: Port=(MouseDY[Port]&0x0F)|(J&0x30);break;
     }
 
-    /* 6th bit is always 1 */
-    return(Port|0x40);
+    /* Bit 6 (6th) always 1. Bit 7 is the cassette tape input line on
+     * real MSX hardware — fed by the Pico's tape generator (file or
+     * GPIO line-in) via a weak hook implemented in Pico/msx_tape.c.
+     * The standalone fMSX build gets the weak stub below, so tape bit
+     * is 0 and BIOS tape I/O still runs through Patch.c's CasStream. */
+    return(Port|0x40|fmsx_tape_psg_bit7());
   }
 
   /* PSG[15] resets mouse counters (???) */
@@ -2015,8 +2033,14 @@ void PPIOut(register byte New,register byte Old)
 {
   /* Keyboard click bit */
   if((New^Old)&0x80) Drum(DRM_CLICK,64);
-  /* Motor relay bit */
-  if((New^Old)&0x10) Drum(DRM_CLICK,255);
+  /* Motor relay bit. On real MSX, bit 4 is active-low — 0 = motor ON
+   * (MOTOR ON in BASIC pulls the line low). Report to the tape module
+   * so its waveform generator gates on the physical motor state. */
+  if((New^Old)&0x10)
+  {
+    Drum(DRM_CLICK,255);
+    fmsx_tape_set_motor(!(New&0x10));
+  }
 }
 
 /** RTCIn() **************************************************/

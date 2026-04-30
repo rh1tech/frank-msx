@@ -79,6 +79,11 @@ typedef struct {
     uint8_t fixed_font;  /* 0/1 — MSX_FIXEDFONT + DEFAULT.FNT */
     uint8_t fmpac;       /* 0/1 — attempt FMPAC.ROM load on reset */
     uint8_t cheats;      /* 0/1 — master cheat enable */
+    uint8_t turbo_tape;  /* 0/1 — real-time tape waveform generator.
+                          * Off by default; only a handful of games with
+                          * custom loaders that bypass BIOS tape traps
+                          * actually need this. Kept off the F12 menu
+                          * and exposed only on the F11 tape slot page. */
 } msx_settings_t;
 
 extern msx_settings_t g_settings;

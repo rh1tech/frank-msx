@@ -25,6 +25,7 @@ typedef enum {
     MSX_ENTRY_DIR,
     MSX_ENTRY_ROM,      /* .rom / .mx1 / .mx2 / .col / .ri */
     MSX_ENTRY_DISK,     /* .dsk / .dsr */
+    MSX_ENTRY_TAPE,     /* .cas */
 } msx_entry_kind_t;
 
 typedef struct {
@@ -38,6 +39,7 @@ typedef enum {
     MSX_TARGET_CART_B = 1,
     MSX_TARGET_DISK_A = 2,
     MSX_TARGET_DISK_B = 3,
+    MSX_TARGET_TAPE   = 4,
     MSX_TARGET_COUNT
 } msx_target_t;
 

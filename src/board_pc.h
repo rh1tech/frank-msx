@@ -36,6 +36,11 @@
 #define NESPAD_GPIO_LATCH 9
 #define NESPAD_GPIO_DATA  20
 
+/* ---- Cassette tape input (EAR / CAS-IN) ----
+ * GP22 is taken by SDCARD_PIN_SPI0_CS on this board, so we park tape-in
+ * on GP28 — still free and away from HDMI lanes. */
+#define TAPE_IN_PIN 28
+
 /* ---- PWM audio ---- */
 #define PWM_PIN0 27
 #define PWM_PIN1 28
