@@ -49,12 +49,23 @@ bool ps2_init(PIO pio, uint kbd_clk, uint mouse_clk);
 /**
  * Initialize mouse only using PIO.
  * Use this when keyboard is managed by a separate driver.
- * 
+ *
  * @param pio        PIO instance to use (pio0 or pio1)
  * @param mouse_clk  Mouse clock pin (data must be mouse_clk + 1)
  * @return true if initialization succeeded
  */
 bool ps2_mouse_pio_init(PIO pio, uint mouse_clk);
+
+/**
+ * Initialize keyboard only using PIO.
+ * Use this when mouse is on a different PIO — keeps the two PS/2 devices
+ * off a shared PIO instance, which avoids SM / IRQ interactions.
+ *
+ * @param pio      PIO instance to use (pio0, pio1, or pio2)
+ * @param kbd_clk  Keyboard clock pin (data must be kbd_clk + 1)
+ * @return true if initialization succeeded
+ */
+bool ps2_kbd_pio_init(PIO pio, uint kbd_clk);
 
 //=============================================================================
 // Mouse API
@@ -98,6 +109,21 @@ bool ps2_mouse_has_wheel(void);
  * Get error statistics for debugging.
  */
 void ps2_mouse_get_errors(uint32_t *frame_err, uint32_t *parity_err, uint32_t *sync_err);
+
+/**
+ * Get runtime counters for debugging.
+ *   raw_bytes    = total bytes accepted by the PIO IRQ into the ring buffer
+ *   valid_packets = total 3-byte (or 4-byte IntelliMouse) packets decoded
+ *   ring_level    = current bytes waiting in the IRQ→main ring buffer
+ */
+void ps2_mouse_get_counters(uint32_t *raw_bytes,
+                            uint32_t *valid_packets,
+                            uint32_t *ring_level);
+
+/** Number of 32-bit words currently sitting in the mouse PIO RX FIFO
+ *  (before we've decoded them). Useful to see whether the PIO SM is even
+ *  receiving frames. */
+uint32_t ps2_mouse_pio_fifo_level(void);
 
 //=============================================================================
 // Keyboard API (raw byte access - higher level in ps2kbd)

@@ -62,6 +62,16 @@ int usbhid_get_key_action(uint8_t *keycode, int *down);
  */
 uint16_t usbhid_get_kbd_state(void);
 
+/** Non-zero while Ctrl+Alt+Del are all currently held on a USB keyboard.
+ *  Del is not exposed in the KBD_STATE bitmask; this chord is only used
+ *  to soft-reset a running ROM. */
+int usbhid_ctrl_alt_del_pressed(void);
+
+/** Pop the next queued raw ASCII character from USB keyboard input.
+ *  Returns a-z / A-Z (shift-aware), 0-9, space, or '\b' for Backspace.
+ *  Returns -1 when empty. Mirrors ps2kbd_get_raw_char(). */
+int usbhid_get_raw_char(void);
+
 /** Check if a USB gamepad is connected (any slot) */
 int usbhid_gamepad_connected(void);
 

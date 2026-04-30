@@ -38,6 +38,7 @@
 #include "ff.h"
 #include "nespad/nespad.h"
 #include "ps2kbd_wrapper.h"
+#include "ps2.h"
 #include "usbhid_wrapper.h"
 #include "msx_settings.h"
 
@@ -365,7 +366,20 @@ int main(void) {
     /* 5. Clear framebuffers */
     memset(screen_mem, 0, sizeof(screen_mem));
 
-    /* 6. Video output (Core 0 init, Core 1 runs audio).
+    /* 6a. PS/2 keyboard + mouse, BEFORE HDMI. The PS/2 bit-bang TX on
+     * GPIO 0/1 electrically perturbs HDMI TMDS on GPIO 12-19; bringing
+     * PS/2 up first means HDMI is never active during the transient.
+     * Ported from murmsnes f5113d8. */
+    printf("Initializing PS/2 keyboard + mouse...\n");
+    ps2kbd_init();
+    if (ps2_mouse_init_device()) {
+        printf("PS/2 mouse initialized%s\n",
+               ps2_mouse_has_wheel() ? " (IntelliMouse)" : "");
+    } else {
+        printf("PS/2 mouse not detected (inactive)\n");
+    }
+
+    /* 6b. Video output (Core 0 init, Core 1 runs audio).
      *
      * On the PIO HDMI path the M2 board shares the HDMI connector with
      * an optional HDMI-to-VGA ribbon/DAC. testPins() probes the clock
@@ -391,16 +405,7 @@ int main(void) {
     graphics_set_mode(GRAPHICSMODE_DEFAULT);
     printf("Video output initialized\n");
 
-    /* 7. PS/2 + NES pad first, so they grab their PIO1 state machines
-     * (SM0 + SM2 for PS/2) before I2S audio claims the next unused one.
-     * If audio comes up first it takes PIO1 SM0 and the PS/2 driver's
-     * hard-coded pio_sm_claim(pio1, 0) panics.
-     *
-     * Input init has to run BEFORE the boot splash — otherwise
-     * msx_boot_welcome() calls ps2kbd_tick() / usbhid_wrapper_tick()
-     * on an uninitialised driver and hangs. */
-    printf("Initializing PS/2 keyboard + mouse...\n");
-    ps2kbd_init();
+    /* 7. NES pad (GPIO 20/21/26 on M2 — far from HDMI, safe after HDMI). */
 #ifdef NESPAD_GPIO_CLK
     if (nespad_begin(clock_get_hz(clk_sys) / 1000, NESPAD_GPIO_CLK,
                      NESPAD_GPIO_DATA, NESPAD_GPIO_LATCH)) {
@@ -409,9 +414,9 @@ int main(void) {
     }
 #endif
 
-    /* USB HID host (keyboard/mouse/gamepad). Stubs out to nothing when
-     * USB_HID_ENABLED is off — the native USB port is then owned by
-     * pico_stdio_usb for CDC printf instead. */
+    /* USB HID host (keyboard/mouse/gamepad/XInput). Stubs out to
+     * nothing when USB_HID_ENABLED is off — the native USB port is
+     * then owned by pico_stdio_usb for CDC printf instead. */
     printf("Initializing USB HID host...\n");
     usbhid_wrapper_init();
 

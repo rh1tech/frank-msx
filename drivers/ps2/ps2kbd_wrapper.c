@@ -255,14 +255,11 @@ void ps2kbd_init(void) {
     // run the PS/2 driver on pio1. The nespad driver also lives on pio1
     // but uses the remaining SMs, and SD card PIO-SPI is only active if
     // not using hardware SPI (we use hardware SPI here).
+    //
+    // Mouse init is now driven from main.c (ps2_mouse_init_device())
+    // so it runs in the right order relative to HDMI init — porting
+    // the fix from murmsnes f5113d8 where PS/2 TX perturbs live HDMI.
     ps2_init(pio1, PS2_PIN_CLK, PS2_MOUSE_CLK);
-
-    // Only boards with a physical second PS/2 port attempt the mouse
-    // reset handshake — otherwise the init wastes three timeouts
-    // talking to nothing and floods the log with failures.
-#ifdef HAS_PS2_MOUSE
-    ps2_mouse_init_device();
-#endif
 
     queue_head = 0;
     queue_tail = 0;

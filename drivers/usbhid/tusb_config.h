@@ -75,6 +75,12 @@ extern "C" {
 // Keyboard = 1 HID, some mice = 2 HID (boot + extra features)
 #define CFG_TUH_HID 8
 
+// XInput application driver. Registered via usbh_app_driver_get_cb() so
+// Xbox 360 / Xbox One / XboxOG controllers (which do NOT enumerate as
+// HID) are picked up alongside regular HID gamepads. Source:
+// xinput_host.c/.h, by Ryan Wendland / usb64 (MIT).
+#define CFG_TUH_XINPUT 1
+
 // CDC host (disable - we don't need to connect to CDC devices)
 #define CFG_TUH_CDC 0
 
