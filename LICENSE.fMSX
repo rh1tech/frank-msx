@@ -1,0 +1,26 @@
+fMSX license
+============
+
+The fMSX core in `src/fMSX/`, the EMULib library in `src/EMULib/`, and the
+Z80 emulator in `src/Z80/` are copyright Marat Fayzullin, 1994-2021.
+
+From the original source headers:
+
+    Copyright (C) Marat Fayzullin 1994-2021
+        You are not allowed to distribute this software
+        commercially. Please, notify me, if you make any
+        changes to this file.
+
+Marat Fayzullin granted permission to Mikhail Matveev <xtreme@rh1.ru> to
+create and publish this RP2350 port (FRANK MSX) in private correspondence,
+May 2026.
+
+For any other redistribution or commercial use of the fMSX / EMULib / Z80
+source, please contact Marat directly. The canonical homepage and author
+contact details are at:
+
+    https://fms.komkon.org/fMSX/
+
+The rest of this repository — the RP2350 port, drivers, and platform layer
+outside `src/fMSX/`, `src/EMULib/`, and `src/Z80/` — is licensed under the
+GNU General Public License v3.0 (see LICENSE).

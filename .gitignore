@@ -53,3 +53,6 @@ Thumbs.db
 
 # Release builds
 release/
+
+# Test-harness output (scripts/auto_test.sh)
+scripts/out/
