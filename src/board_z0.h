@@ -1,4 +1,12 @@
 /*
+ * frank-msx — fMSX for RP2350
+ *
+ * Copyright (c) 2026 Mikhail Matveev <xtreme@rh1.tech>
+ * https://github.com/rh1tech/frank-msx
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
+/*
  * board_z0.h — Waveshare RP2350-PiZero GPIO layout for frank-msx.
  *
  * Supported video: PIO HDMI / PIO VGA on GPIO 32..39 (no TV, no HSTX).

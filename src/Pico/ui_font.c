@@ -1,4 +1,12 @@
 /*
+ * frank-msx — fMSX for RP2350
+ *
+ * Copyright (c) 2026 Mikhail Matveev <xtreme@rh1.tech>
+ * https://github.com/rh1tech/frank-msx
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
+/*
  * ui_font.c — 6x8 bitmap font for the MSX loader overlay.
  *
  * Glyphs span ASCII 32..126 (95 printable characters). Each glyph is 8

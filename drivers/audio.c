@@ -1,4 +1,12 @@
 /*
+ * frank-msx — fMSX for RP2350
+ *
+ * Copyright (c) 2026 Mikhail Matveev <xtreme@rh1.tech>
+ * https://github.com/rh1tech/frank-msx
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
+/*
  * frank-snes - I2S Audio Driver with Chained Double Buffer DMA
  * Based on murmgenesis audio driver by Mikhail Matveev
  *

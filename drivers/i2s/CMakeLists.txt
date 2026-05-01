@@ -1,3 +1,11 @@
+#
+# frank-msx — fMSX for RP2350
+#
+# Copyright (c) 2026 Mikhail Matveev <xtreme@rh1.tech>
+# https://github.com/rh1tech/frank-msx
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+
 # I2S audio driver (copied verbatim from murmnes drivers/i2s/).
 # murmnes compiles the .c + .pio directly into its executable; here we
 # wrap them into an OBJECT-style library so the top-level CMakeLists can

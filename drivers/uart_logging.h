@@ -1,4 +1,12 @@
 /*
+ * frank-msx — fMSX for RP2350
+ *
+ * Copyright (c) 2026 Mikhail Matveev <xtreme@rh1.tech>
+ * https://github.com/rh1tech/frank-msx
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
+/*
  * MurmSNES - Lightweight UART logging (TX-only, no stdio/mutex overhead)
  * Bypasses Pico SDK stdio layer to avoid spinlock contention with HDMI DMA.
  *

@@ -1,4 +1,12 @@
 /*
+ * frank-msx — fMSX for RP2350
+ *
+ * Copyright (c) 2026 Mikhail Matveev <xtreme@rh1.tech>
+ * https://github.com/rh1tech/frank-msx
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
+/*
  * HDMI_vga_hstx.c — VGA HSTX adapter.
  *
  * Exposes the same `graphics_*` API as the PIO HDMI / HDMI_hstx drivers but

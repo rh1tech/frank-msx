@@ -1,4 +1,12 @@
 /*
+ * frank-msx — fMSX for RP2350
+ *
+ * Copyright (c) 2026 Mikhail Matveev <xtreme@rh1.tech>
+ * https://github.com/rh1tech/frank-msx
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
+/*
  * ui_draw.c — 8-bit framebuffer drawing primitives for the loader UI.
  *
  * Ported and simplified from murmapple's disk_ui.c. The murmapple

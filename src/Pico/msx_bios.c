@@ -1,4 +1,12 @@
 /*
+ * frank-msx — fMSX for RP2350
+ *
+ * Copyright (c) 2026 Mikhail Matveev <xtreme@rh1.tech>
+ * https://github.com/rh1tech/frank-msx
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
+/*
  * msx_bios.c — built-in MSX1 BIOS pointer.
  *
  * fMSX's LoadROM("MSX.ROM", 0x8000, 0) is called from ResetMSX when the model

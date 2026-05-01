@@ -1,4 +1,12 @@
 #!/bin/bash
+#
+# frank-msx — fMSX for RP2350
+#
+# Copyright (c) 2026 Mikhail Matveev <xtreme@rh1.tech>
+# https://github.com/rh1tech/frank-msx
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+
 # Flash, capture USB serial, and grab a VGA frame — used by the autonomous
 # test loop. Runs entirely headless so Claude Code can iterate on the VGA
 # driver without manual flashing.

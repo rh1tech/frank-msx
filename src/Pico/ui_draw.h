@@ -1,4 +1,12 @@
 /*
+ * frank-msx — fMSX for RP2350
+ *
+ * Copyright (c) 2026 Mikhail Matveev <xtreme@rh1.tech>
+ * https://github.com/rh1tech/frank-msx
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
+/*
  * ui_draw.h — 8-bit indexed framebuffer drawing primitives for the
  *             MSX loader overlay. Palette indices are reserved via
  *             ui_draw_install_palette() so they don't collide with

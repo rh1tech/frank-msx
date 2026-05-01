@@ -1,4 +1,12 @@
 /*
+ * frank-msx — fMSX for RP2350
+ *
+ * Copyright (c) 2026 Mikhail Matveev <xtreme@rh1.tech>
+ * https://github.com/rh1tech/frank-msx
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
+/*
  * board_pc.h — Olimex RP2040-PICO-PC GPIO layout for frank-msx.
  *
  * Supported video: PIO HDMI / PIO VGA (no TV; no HSTX audio path used).

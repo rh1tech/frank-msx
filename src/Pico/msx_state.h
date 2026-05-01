@@ -1,4 +1,12 @@
 /*
+ * frank-msx — fMSX for RP2350
+ *
+ * Copyright (c) 2026 Mikhail Matveev <xtreme@rh1.tech>
+ * https://github.com/rh1tech/frank-msx
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
+/*
  * msx_state.h — save-state slot helpers, PSRAM-backed so we can
  * hold the MAX_STASIZE buffer (~272 KB for MSX2+ / 512 kB RAM+VRAM)
  * that doesn't fit in the RP2350 SRAM heap.
