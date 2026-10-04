@@ -1,17 +1,3 @@
-# == DO NOT EDIT THE FOLLOWING LINES for the Raspberry Pi Pico VS Code Extension to work ==
-if(WIN32)
-    set(USERHOME $ENV{USERPROFILE})
-else()
-    set(USERHOME $ENV{HOME})
-endif()
-set(sdkVersion 2.2.0)
-set(toolchainVersion 14_2_Rel1)
-set(picotoolVersion 2.2.0)
-set(picoVscode ${USERHOME}/.pico-sdk/cmake/pico-vscode.cmake)
-if (EXISTS ${picoVscode})
-    include(${picoVscode})
-endif()
-# ====================================================================================
 #
 # frank-msx — fMSX for RP2350
 #
@@ -34,7 +20,7 @@ cmake_minimum_required(VERSION 3.13)
 #
 # Select with -DPLATFORM=m1|m2|dv|pc|z0 (default m2).
 # BOARD_VARIANT is kept as a legacy alias for the same choice.
-set(PLATFORM       "pc" CACHE STRING "Target platform: m1, m2, dv, pc, z0")
+set(PLATFORM       "m2" CACHE STRING "Target platform: m1, m2, dv, pc, z0")
 set_property(CACHE PLATFORM PROPERTY STRINGS m1 m2 dv pc z0)
 
 # Allow BOARD_VARIANT (uppercase) as a back-compat alias.
@@ -118,7 +104,7 @@ set(FLASH_SPEED "66"  CACHE STRING "Flash target max frequency in MHz")
 set(MSX_MODEL "3" CACHE STRING "MSX model to emulate (1, 2, or 3)")
 
 # Optional USB HID host (disabled by default since we focus on PS/2)
-option(USB_HID_ENABLED "Enable USB HID host" ON)
+option(USB_HID_ENABLED "Enable USB HID host" OFF)
 
 # CPU voltage selection based on speed. The RP2350 vreg only exposes
 # 1.50 V → 1.60 V → 1.65 V → 1.70 V steps (no 1.55 V).
