@@ -17,7 +17,7 @@
  *      bits into the PSG's port-14 "tape input" (bit 7). That second
  *      path is what custom non-BIOS loaders need in order to load.
  *
- *   2. Physical line-in on GPIO TAPE_IN_PIN (22 on M1/M2/Z0, 28 on DV/PC).
+ *   2. Physical line-in on GPIO TAPE_IN_PIN (22 on M1/M2/Z0, 28 on DV, 3 on PC).
  *      When enabled, the GPIO level is sampled every time the MSX reads
  *      the tape bit. Useful for plugging a real cassette / audio-out
  *      of a phone into the Pico.

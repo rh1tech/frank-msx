@@ -20,6 +20,7 @@
 #include "MSX.h"
 #include "HDMI.h"
 #include "ff.h"
+#include "psram_allocator.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -103,7 +104,20 @@ static const uint8_t AUDIO_CYCLE[] = {
 #endif
 #define AUDIO_CYCLE_LEN ((int)(sizeof(AUDIO_CYCLE) / sizeof(AUDIO_CYCLE[0])))
 
+/* Without PSRAM only the MSX1 machine fits (64 KB RAM, 32 KB VRAM, see
+ * ResetMSX); offer nothing else in the menu and keep msx.ini values in
+ * that range. */
+static void clamp_to_hardware(void) {
+    if (psram_present()) return;
+    g_settings.model = 0;
+    g_settings.ram   = 0;
+    g_settings.vram  = 0;
+}
+
 int msx_settings_choices(msx_setting_id_t id) {
+    if (!psram_present() && (id == MSX_SETTING_MODEL ||
+                             id == MSX_SETTING_RAM || id == MSX_SETTING_VRAM))
+        return 1;
     switch (id) {
         case MSX_SETTING_MODEL:       return (int)(sizeof(MODEL_LABELS)/sizeof(MODEL_LABELS[0]));
         case MSX_SETTING_REGION:      return (int)(sizeof(REGION_LABELS)/sizeof(REGION_LABELS[0]));
@@ -323,6 +337,7 @@ void msx_settings_init_from_bootstate(void) {
         if (RAMPages == RAM_PAGES[i]) { g_settings.ram = (uint8_t)i; break; }
     for (size_t i = 0; i < sizeof(VRAM_PAGES)/sizeof(VRAM_PAGES[0]); ++i)
         if (VRAMPages == VRAM_PAGES[i]) { g_settings.vram = (uint8_t)i; break; }
+    clamp_to_hardware();
 }
 
 extern int  msx_disk_flush_if_dirty(int drv);
@@ -426,6 +441,7 @@ bool msx_settings_load(void) {
     FRESULT fr = f_open(&f, MSX_INI_PATH, FA_READ);
     if (fr != FR_OK) {
         printf("settings: no msx.ini (fr=%d), using defaults\n", fr);
+        clamp_to_hardware();
         return false;
     }
 
@@ -465,6 +481,7 @@ bool msx_settings_load(void) {
         }
     }
     f_close(&f);
+    clamp_to_hardware();
     printf("settings: loaded %d keys, skipped %d from %s\n",
            applied, skipped, MSX_INI_PATH);
     return true;

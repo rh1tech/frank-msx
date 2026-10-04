@@ -105,7 +105,7 @@ Select the platform at build time: `PLATFORM=dv ./build.sh`. Default is `m2`. Th
 ## Hardware requirements
 
 - Raspberry Pi Pico 2 (RP2350) or a compatible board.
-- 8 MB QSPI PSRAM. Mandatory. Main RAM, VRAM, and the mapper/tile cache all live in PSRAM.
+- 8 MB QSPI PSRAM. Recommended: with PSRAM, main RAM, VRAM, and the mapper/tile cache all live in PSRAM. Without it the emulator runs as an MSX1 (see below).
 - HDMI or VGA connector wired to the TMDS pins through 270 Ω resistors. No encoder IC needed.
 - SD card socket (SPI).
 - PS/2 keyboard. Recommended: the MSX is a keyboard computer.
@@ -117,7 +117,13 @@ Select the platform at build time: `PLATFORM=dv ./build.sh`. Default is `m2`. Th
 
 ### PSRAM
 
-The 8 MB PSRAM is not optional. Main RAM, VRAM, the ROM cache, and all per-ROM chunks live there. Without PSRAM there isn't enough room for MSX2+ with 512 KB RAM + 512 KB VRAM plus large MegaROMs.
+With the 8 MB PSRAM, main RAM, VRAM, the ROM cache, and all per-ROM chunks live there, and every model (MSX1, MSX2, MSX2+) with up to 512 KB RAM + 512 KB VRAM is available.
+
+PSRAM is detected at boot. When it is missing, the emulator falls back to what fits into the RP2350's SRAM:
+
+- the model is forced to MSX1 (64 KB RAM, 32 KB VRAM); MSX2 and MSX2+ need PSRAM, only `MSX.ROM` is required on the card;
+- cartridge images are written into the on-board flash and run from there: slot A and slot B get 1 MB each, the internal slots (FMPAC and the like) 128 KB each. A flash sector is rewritten only when its contents differ, so loading the same cartridge again is fast and does not wear the flash. The flash map assumes a 4 MB flash and keeps clear of pico-launcher at the top of it;
+- `KANJI.ROM` is not loaded, disk images (`.dsk`) do not fit, and save states and large tapes may fail for lack of memory; the file browser lists up to 64 entries per directory.
 
 Three ways to get PSRAM hardware:
 
@@ -348,7 +354,7 @@ PLATFORM=pc ./build.sh                   # Olimex PICO-PC
 PLATFORM=z0 ./build.sh                   # Waveshare RP2350-PiZero
 ```
 
-Output: `build/frank-msx.uf2`.
+Output: `bin/<build type>/<board>-frank-msx-<video>-<MHz>-<version>.uf2`, e.g. `bin/Release/PCp2-frank-msx-HDMI-VGA-252MHz-0.01.uf2`.
 
 ### Build options
 
@@ -388,7 +394,7 @@ With the board in BOOTSEL mode:
 ```bash
 ./flash.sh
 # or
-picotool load build/frank-msx.uf2
+picotool load bin/Release/<board>-frank-msx-*.uf2
 ```
 
 ## Troubleshooting

@@ -118,9 +118,28 @@ void msx_ui_init(void) {
 
 bool msx_ui_is_visible(void) { return s_state != UI_HIDDEN; }
 
+/* Save-state slot occupancy for the pages that show it. The pages are
+ * redrawn every frame; asking the SD card (f_stat) for every slot on every
+ * frame keeps the SD bus busy all the time the menu is open. Cache it and
+ * refresh only when the menu opens or a slot is saved / deleted. */
+static int8_t s_slot_used[MSX_STATE_SLOTS];
+static bool   s_slot_cache_valid = false;
+
+static void slot_cache_invalidate(void) { s_slot_cache_valid = false; }
+
+static bool slot_used(int s) {
+    if (!s_slot_cache_valid) {
+        for (int i = 0; i < MSX_STATE_SLOTS; ++i)
+            s_slot_used[i] = msx_state_slot_exists(i) ? 1 : 0;
+        s_slot_cache_valid = true;
+    }
+    return s_slot_used[s] != 0;
+}
+
 void msx_ui_show(void) {
     if (s_state != UI_HIDDEN) return;
     msx_rescan();
+    slot_cache_invalidate();
     s_state  = UI_SELECT_TARGET;
     s_target = 0;
     s_file   = 0;
@@ -174,6 +193,7 @@ void msx_ui_toggle_states(void) {
     if (s_state != UI_HIDDEN) { msx_ui_hide(); return; }
     s_state_row = 0;
     s_state_action = 0;
+    slot_cache_invalidate();
     s_state = UI_STATES;
     s_dirty = true;
     InMenu = 1;
@@ -573,6 +593,7 @@ static bool handle_states_page(unsigned int xk) {
             if (s_state_action == 0) {
                 msx_ui_show_busy("Saving state to PSRAM + SD...");
                 rc = msx_state_save(s_state_row);
+                slot_cache_invalidate();
                 if (rc == 0) {
                     snprintf(s_msg, sizeof(s_msg),
                              "State saved to slot %d.", s_state_row);
@@ -620,6 +641,7 @@ static bool handle_states_confirm_delete(unsigned int xk) {
             return true;
         case XK_Return: {
             int rc = msx_state_delete(s_state_row);
+            slot_cache_invalidate();
             if (rc == 0) {
                 snprintf(s_msg, sizeof(s_msg),
                          "Slot %d deleted.", s_state_row);
@@ -648,7 +670,7 @@ static void render_states_page(uint8_t *fb, int stride) {
         bool sel = (i == s_state_row);
         char line[48];
         snprintf(line, sizeof(line), "Slot %d   %s",
-                 i, msx_state_slot_exists(i) ? "[used]" : "[empty]");
+                 i, slot_used(i) ? "[used]" : "[empty]");
         ui_draw_menu_item(fb, stride, x, y, cw, line, max_chars, sel);
         y += UI_LINE_H + 1;
     }
@@ -887,7 +909,7 @@ static void render_target_page(uint8_t *fb, int stride) {
         } else {
             int used = 0;
             for (int s = 0; s < MSX_STATE_SLOTS; ++s)
-                if (msx_state_slot_exists(s)) ++used;
+                if (slot_used(s)) ++used;
             snprintf(buf, sizeof(buf), "%d/%d used", used, MSX_STATE_SLOTS);
             display = buf;
         }

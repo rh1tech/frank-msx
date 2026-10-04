@@ -319,6 +319,7 @@ int LoadFile(const char *FileName);
 /** in 16kB pages on success, 0 on failure.                 **/
 /*************************************************************/
 int LoadCart(const char *FileName,int Slot,int Type);
+void DropCart(int Slot);           /* Free cart ROM, no reset */
 
 /** SaveSTA() ************************************************/
 /** Save emulation state to a .STA file.                    **/

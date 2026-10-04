@@ -201,6 +201,28 @@ int _isatty(int fd) {
     return fd < FD_BASE;
 }
 
+/* stat()/unlink() by path. newlib's defaults always fail ("_stat is not
+ * implemented"): EMULib uses stat() to size files when a directory is
+ * mounted as a disk (Floppy.c) and unlink() to remove a half-written
+ * disk image after a failed save (FDIDisk.c). */
+int _stat(const char *name, struct stat *st) {
+    char path[256];
+    FILINFO fi;
+    memset(st, 0, sizeof(*st));
+    path_join(path, sizeof(path), g_cwd, name);
+    if (f_stat(path, &fi) != FR_OK) { errno = ENOENT; return -1; }
+    st->st_mode = (fi.fattrib & AM_DIR) ? S_IFDIR : S_IFREG;
+    st->st_size = (off_t)fi.fsize;
+    return 0;
+}
+
+int _unlink(const char *name) {
+    char path[256];
+    path_join(path, sizeof(path), g_cwd, name);
+    if (f_unlink(path) != FR_OK) { errno = ENOENT; return -1; }
+    return 0;
+}
+
 /* Non-standard POSIX bits that fMSX touches (ProgDir chdir, getcwd). */
 
 int chdir(const char *path) {

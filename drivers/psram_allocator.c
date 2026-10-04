@@ -55,6 +55,10 @@ extern void   mspace_free    (mspace msp, void *ptr);
 extern size_t mspace_usable_size(const void *ptr);
 
 static mspace g_msp = NULL;
+static bool   g_psram_present = true;
+
+void psram_set_present(bool present) { g_psram_present = present; }
+bool psram_present(void)             { return g_psram_present; }
 
 static int is_psram(const void *p) {
     uintptr_t a = (uintptr_t)p;
@@ -63,7 +67,7 @@ static int is_psram(const void *p) {
 }
 
 static void ensure_init(void) {
-    if (g_msp) return;
+    if (g_msp || !g_psram_present) return;
     void  *base = psram_start + SCRATCH_SIZE;
     size_t size = PSRAM_SIZE  - SCRATCH_SIZE;
     g_msp = create_mspace_with_base(base, size, 0);
@@ -78,12 +82,14 @@ static void ensure_init(void) {
 /* ---- public API ---------------------------------------------- */
 
 void *psram_malloc(size_t size) {
+    if (!g_psram_present) return malloc(size);
     ensure_init();
     if (!g_msp) return NULL;
     return mspace_malloc(g_msp, size);
 }
 
 void *psram_realloc(void *ptr, size_t size) {
+    if (!g_psram_present) return realloc(ptr, size);
     ensure_init();
     if (!g_msp) return NULL;
     if (!ptr)       return mspace_malloc(g_msp, size);
@@ -103,7 +109,8 @@ void psram_free(void *ptr) {
 }
 
 size_t psram_usable_size(void *ptr) {
-    return ptr ? mspace_usable_size(ptr) : 0;
+    if (!ptr || !is_psram(ptr)) return 0;
+    return mspace_usable_size(ptr);
 }
 
 void psram_reset(void) {
@@ -126,14 +133,14 @@ void psram_restore_session(void) { }
 void psram_print_stats(void)     { }
 
 void *psram_get_scratch_1(size_t size) {
-    if (size > 128u * 1024u) return NULL;
+    if (!g_psram_present || size > 128u * 1024u) return NULL;
     return psram_start;
 }
 void *psram_get_scratch_2(size_t size) {
-    if (size > 128u * 1024u) return NULL;
+    if (!g_psram_present || size > 128u * 1024u) return NULL;
     return psram_start + 128u * 1024u;
 }
 void *psram_get_file_buffer(size_t size) {
-    if (size > 256u * 1024u) return NULL;
+    if (!g_psram_present || size > 256u * 1024u) return NULL;
     return psram_start + 256u * 1024u;
 }

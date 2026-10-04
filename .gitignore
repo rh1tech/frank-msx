@@ -1,5 +1,6 @@
 # Build Directory
 build/
+bin/
 
 # Binary and Object Files
 *.elf
@@ -56,3 +57,4 @@ release/
 
 # Test-harness output (scripts/auto_test.sh)
 scripts/out/
+.vscode/

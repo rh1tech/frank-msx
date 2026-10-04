@@ -131,8 +131,10 @@ for ENTRY in "${RELEASE_TARGETS[@]}"; do
         ${TGT_EXTRA} > /dev/null 2>&1
 
     if make -j$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4) > /dev/null 2>&1; then
-        if [[ -f "frank-msx.uf2" ]]; then
-            cp "frank-msx.uf2" "$RELEASE_DIR/$OUTPUT_NAME"
+        # CMake writes <board>-frank-msx-*.uf2 into bin/<build type>/
+        BUILT_UF2=$(ls -t "$SCRIPT_DIR"/bin/*frank-msx*.uf2 "$SCRIPT_DIR"/bin/*/*frank-msx*.uf2 2>/dev/null | head -1)
+        if [[ -n "$BUILT_UF2" && -f "$BUILT_UF2" ]]; then
+            cp "$BUILT_UF2" "$RELEASE_DIR/$OUTPUT_NAME"
             echo -e "  ${GREEN}✓ ${TGT_LABEL}${NC} → release/$OUTPUT_NAME"
         else
             echo -e "  ${RED}✗ ${TGT_LABEL} UF2 not found${NC}"

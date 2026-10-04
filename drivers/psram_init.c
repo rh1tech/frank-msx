@@ -84,3 +84,25 @@ void __no_inline_not_in_flash_func(psram_init)(uint cs_pin) {
     
     hw_set_bits(&xip_ctrl_hw->ctrl, XIP_CTRL_WRITABLE_M1_BITS);
 }
+
+bool __no_inline_not_in_flash_func(psram_detect)(uint cs_pin) {
+    /* Uncached alias of the M1 window, so the test hits the chip itself. */
+    volatile uint32_t *p = (volatile uint32_t *)0x15000000u;
+    static const uint32_t pat[4] = {
+        0x5A5AA5A5u, 0xA5A55A5Au, 0x12345678u, 0xEDCBA987u
+    };
+    bool ok = true;
+
+    for (int i = 0; i < 4; i++) p[i * 4096] = pat[i];        /* 16 KB apart */
+    __asm volatile ("dsb" ::: "memory");
+    for (int i = 0; i < 4; i++) if (p[i * 4096] != pat[i]) ok = false;
+    for (int i = 0; i < 4; i++) p[i * 4096] = ~pat[i];
+    __asm volatile ("dsb" ::: "memory");
+    for (int i = 0; i < 4; i++) if (p[i * 4096] != ~pat[i]) ok = false;
+
+    if (!ok) {
+        hw_clear_bits(&xip_ctrl_hw->ctrl, XIP_CTRL_WRITABLE_M1_BITS);
+        gpio_set_function(cs_pin, GPIO_FUNC_NULL);
+    }
+    return ok;
+}

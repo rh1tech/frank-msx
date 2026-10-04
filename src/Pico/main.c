@@ -16,6 +16,7 @@
 
 #include "pico/stdlib.h"
 #include "pico/multicore.h"
+#include "pico/flash.h"
 #include "pico/time.h"
 #include "hardware/vreg.h"
 #include "hardware/clocks.h"
@@ -174,6 +175,9 @@ static void ensure_i2s_initialized(void) {
  * Called from platform.c's WriteAudio() with mono int16 samples. */
 void audio_dispatch_push_samples(const int16_t *buf, int count) {
     uint8_t mode = g_settings.audio_mode;
+    /* "Disabled" parks the PWM outputs at 0 V instead of holding them at
+     * mid-level. */
+    if (pwm_audio_initialized) pwm_audio_set_muted(mode == MSX_AUDIO_DISABLED);
     if (mode == MSX_AUDIO_PWM) {
         ensure_pwm_audio_initialized();
         pwm_audio_push_samples(buf, count);
@@ -263,8 +267,37 @@ void audio_dispatch_fill_silence(int count) {
 /* ---- Render core (Core 1): boots audio + drains the ring ------------- */
 static volatile bool core1_ready = false;
 
+/* ---- Video core (Core 1) on PWM-only boards with PIO HDMI/VGA ----------
+ *
+ * Boards without an I2S DAC (DV / PC / Z0) have no audio render core, so
+ * Core 1 used to sit idle while the per-scanline HDMI DMA interrupt ran on
+ * Core 0 next to the emulator, at top priority, and starved the rest of
+ * Core 0's interrupt work. As in pico-nes / murm386 / PICO-BK, the video
+ * driver gets Core 1 to itself: graphics_init() runs there, so its DMA
+ * IRQ handler is installed and enabled on Core 1. */
+#if !defined(HDMI_HSTX) && !defined(VGA_HSTX) && !defined(VIDEO_COMPOSITE) && !defined(HAS_I2S)
+#define VIDEO_ON_CORE1 1
+static volatile bool video_core_ready = false;
+
+static void __no_inline_not_in_flash_func(video_core_idle)(void) {
+    for (;;) __wfi();   /* everything happens in the DMA IRQ handler */
+}
+
+static void video_core(void) {
+    /* Core 0 parks this core while it writes cartridges to flash. */
+    flash_safe_execute_core_init();
+    graphics_init(g_out_HDMI);
+    __dmb();
+    video_core_ready = true;
+    video_core_idle();
+}
+#endif
+
 #if !defined(HDMI_HSTX) && !defined(VGA_HSTX) && !defined(VIDEO_COMPOSITE) && defined(HAS_I2S)
 void __time_critical_func(render_core)(void) {
+    /* Let core 0 park this core while it writes cartridges to flash
+     * (no-PSRAM mode, msx_flashrom.c). */
+    flash_safe_execute_core_init();
     static i2s_config_t i2s_cfg;
     i2s_cfg = i2s_get_default_config();
     i2s_cfg.sample_freq     = AUDIO_SAMPLE_RATE;
@@ -311,6 +344,21 @@ extern int StartMSX(int NewMode, int NewRAMPages, int NewVRAMPages);
 extern void TrashMSX(void);
 
 int main(void) {
+#if defined(BOARD_PC) && defined(PICO_SMPS_MODE_PIN)
+    /* The PICO-PC carries a Raspberry Pi Pico 2, whose 3.3 V SMPS drops
+     * into power-save (PFM) mode at light load unless GPIO23 is driven
+     * high. At 252 MHz / default core voltage the load is light enough for
+     * PFM, and its load-dependent ripple on 3.3 V reaches the PWM audio
+     * outputs (PWM level = duty x 3.3 V) as hiss that follows every SD card
+     * access or other activity. Forcing PWM mode (as the Pico 2 datasheet
+     * recommends for low-noise analog work) keeps the rail quiet. The
+     * emulators that run quietly on this board clock at 378-504 MHz with a
+     * raised core voltage, where the SMPS stays out of PFM anyway. */
+    gpio_init(PICO_SMPS_MODE_PIN);
+    gpio_set_dir(PICO_SMPS_MODE_PIN, GPIO_OUT);
+    gpio_put(PICO_SMPS_MODE_PIN, 1);
+#endif
+
     /* 1. Voltage + clock for overclocking.
      *
      * Only touch vreg / QMI flash timings when genuinely overclocking
@@ -366,8 +414,16 @@ int main(void) {
     uint psram_pin = get_psram_pin();
     printf("PSRAM pin: %u\n", psram_pin);
     psram_init(psram_pin);
-    psram_reset();
-    printf("PSRAM initialized (8 MB)\n");
+    {
+        bool have_psram = psram_detect(psram_pin);
+        psram_set_present(have_psram);
+        if (have_psram) {
+            psram_reset();
+            printf("PSRAM initialized (8 MB)\n");
+        } else {
+            printf("PSRAM not found: MSX1 in SRAM, cartridges in flash\n");
+        }
+    }
 
     /* Clear framebuffers before any graphics init. */
     memset(screen_mem, 0, sizeof(screen_mem));
@@ -443,7 +499,13 @@ int main(void) {
     }
 #endif
     printf("Initializing video output...\n");
+#ifdef VIDEO_ON_CORE1
+    multicore_launch_core1(video_core);
+    while (!video_core_ready) tight_loop_contents();
+    __dmb();
+#else
     graphics_init(g_out_HDMI);
+#endif
     graphics_set_buffer(SCREEN[0]);
     graphics_set_res(FB_W, FB_H);
     graphics_set_shift((320 - FB_W) / 2, 0);  /* centre horizontally */
@@ -481,7 +543,9 @@ int main(void) {
 #ifndef FRANK_MSX_MODEL
 #define FRANK_MSX_MODEL 3
 #endif
-        msx_boot_require_bios(sd_mounted, FRANK_MSX_MODEL);
+        /* Without PSRAM only MSX1 runs (see ResetMSX), so only MSX.ROM
+         * is required. */
+        msx_boot_require_bios(sd_mounted, psram_present() ? FRANK_MSX_MODEL : 1);
     }
 
     /* 8. Launch audio core */
@@ -512,9 +576,10 @@ int main(void) {
     printf("Render core ready\n");
 #else
     /* PWM-only platforms (DV / PC / Z0): no render core — PWM audio is
-     * filled directly on Core 0 from audio_dispatch_push_samples. */
+     * filled directly on Core 0 from audio_dispatch_push_samples; Core 1
+     * runs the video driver (VIDEO_ON_CORE1, see above). */
     core1_ready = true;
-    printf("PWM audio only — no render core launched\n");
+    printf("PWM audio on Core 0, video on Core 1\n");
 #endif
 
 #ifdef PICO_DEFAULT_LED_PIN
@@ -564,6 +629,11 @@ int main(void) {
         int m, r, v;
         msx_settings_compose(&m, &r, &v);
         Mode = m; RAMPages = r; VRAMPages = v;
+        if (!psram_present()) {
+            /* SRAM holds only an MSX1: 64 kB RAM, 32 kB VRAM. */
+            Mode = (Mode & ~MSX_MODEL) | MSX_MSX1;
+            RAMPages = 4; VRAMPages = 2;
+        }
     }
 
     if (!InitMachine()) {

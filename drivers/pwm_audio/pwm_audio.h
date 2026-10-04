@@ -43,6 +43,9 @@ void pwm_audio_fill_silence(int count);
  * frame_rate = 60 for NTSC, 50 for PAL. */
 void pwm_audio_set_frame_rate(int frame_rate);
 
+/* Muted: both PWM outputs are held at level 0 (0 V) instead of playing. */
+void pwm_audio_set_muted(bool muted);
+
 #ifdef __cplusplus
 }
 #endif

@@ -360,6 +360,7 @@ static int hasext(const char *FileName,const char *Ext)
 
 #ifdef FRANK_MSX_PSRAM
 #include "psram_allocator.h"
+#include "msx_flashrom.h"
 #define MSX_MALLOC(sz)  psram_malloc(sz)
 #define MSX_FREE(p)     psram_free(p)
 #else
@@ -528,7 +529,11 @@ int StartMSX(int NewMode,int NewRAMPages,int NewVRAMPages)
   { if(Verbose) printf("CMOS.ROM.."); }
   else memcpy(RTC,RTCInit,sizeof(RTC));
 
-  /* Try loading Kanji alphabet ROM */
+  /* Try loading Kanji alphabet ROM (128kB: skipped without PSRAM, where
+   * it would not leave room for the MSX1 RAM and VRAM in SRAM) */
+#ifdef FRANK_MSX_PSRAM
+  if(psram_present())
+#endif
   if((Kanji=LoadROM("KANJI.ROM",0x20000,0)))
   { if(Verbose) printf("KANJI.ROM.."); }
 
@@ -700,6 +705,17 @@ void TrashMSX(void)
 /*************************************************************/
 int ResetMSX(int NewMode,int NewRAMPages,int NewVRAMPages)
 {
+#ifdef FRANK_MSX_PSRAM
+  /* Without PSRAM only the MSX1 machine fits in SRAM: 64kB RAM, 32kB VRAM.
+   * Cartridges then live in flash (msx_flashrom.c). */
+  if(!psram_present())
+  {
+    NewMode      = (NewMode&~MSX_MODEL)|MSX_MSX1;
+    NewRAMPages  = 4;
+    NewVRAMPages = 2;
+  }
+#endif
+
   /*** VDP status register states: ***/
   static const byte VDPSInit[16] = { 0x9F,0,0x6C,0,0,0,0,0,0,0,0,0,0,0,0,0 };
 
@@ -3027,7 +3043,12 @@ byte *LoadROM(const char *Name,int Size,byte *Buf)
   }
 
   /* Read data */
-  if((J=fread(P,1,Size,F))!=Size)
+#ifdef FRANK_MSX_PSRAM
+  if(flashrom_is_flash(P)) J=flashrom_load(F,P,Size);
+  else
+#endif
+  J=fread(P,1,Size,F);
+  if(J!=Size)
   {
     if(!Buf) FreeMemory(P);
     fclose(F);
@@ -3096,6 +3117,19 @@ int FindState(const char *Name)
 /** Load cartridge into given slot. Returns cartridge size  **/
 /** in 16kB pages on success, 0 on failure.                 **/
 /*************************************************************/
+/** DropCart() **********************************************/
+/** Release the ROM of a cartridge slot without resetting  **/
+/** the MSX. FreeMemory() frees only GetMemory() chunks,   **/
+/** so a ROM kept in the flash window is simply dropped.   **/
+/*************************************************************/
+void DropCart(int Slot)
+{
+  if((Slot<0)||(Slot>=MAXSLOTS)) return;
+  FreeMemory(ROMData[Slot]);
+  ROMData[Slot] = 0;
+  ROMMask[Slot] = 0;
+}
+
 int LoadCart(const char *FileName,int Slot,int Type)
 {
   int C1,C2,Len,Pages,ROM64,BASIC;
@@ -3236,7 +3270,11 @@ int LoadCart(const char *FileName,int Slot,int Type)
 
   /* Assign ROMMask for MegaROMs */
   ROMMask[Slot]=!ROM64&&(Len>4)? (Pages-1):0x00;
-  /* Allocate space for the ROM */
+  /* Allocate space for the ROM: flash window when there is no PSRAM */
+#ifdef FRANK_MSX_PSRAM
+  if(flashrom_enabled()) ROMData[Slot]=P=flashrom_slot_ptr(Slot,Pages<<13);
+  else
+#endif
   ROMData[Slot]=P=GetMemory(Pages<<13);
   if(!P) { PRINTFAILED;return(0); }
 
@@ -3245,7 +3283,14 @@ int LoadCart(const char *FileName,int Slot,int Type)
 
   /* Mirror ROM if it is smaller than 2^n pages */
   if(Len<Pages)
-    memcpy(P+Len*0x2000,P+(Len-Pages/2)*0x2000,(Pages-Len)*0x2000); 
+  {
+#ifdef FRANK_MSX_PSRAM
+    if(flashrom_is_flash(P))
+      flashrom_copy(P+Len*0x2000,P+(Len-Pages/2)*0x2000,(Pages-Len)*0x2000);
+    else
+#endif
+    memcpy(P+Len*0x2000,P+(Len-Pages/2)*0x2000,(Pages-Len)*0x2000);
+  }
 
   /* Detect ROMs containing BASIC code */
   BASIC=(P[0]=='A')&&(P[1]=='B')&&!(P[2]||P[3])&&(P[8]||P[9]);

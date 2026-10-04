@@ -17,6 +17,13 @@
 #define MURMDOOM_PSRAM_SIZE_BYTES (8u * 1024u * 1024u)
 #endif
 
+#include <stdbool.h>
+
+/* PSRAM presence, set once at boot from psram_detect(). Without PSRAM
+ * psram_malloc()/psram_realloc() fall back to the SRAM heap. */
+void psram_set_present(bool present);
+bool psram_present(void);
+
 void *psram_malloc(size_t size);
 void *psram_realloc(void *ptr, size_t size);
 void psram_free(void *ptr);

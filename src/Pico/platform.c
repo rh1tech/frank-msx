@@ -821,7 +821,14 @@ void PlayAllSound(int uSec) {
      * Unix port used 2× to avoid underruns, but our ring already
      * carries ~186 ms of headroom, so over-requesting just causes
      * core 0 to spin inside RenderAndPlayAudio once the ring fills. */
-    RenderAndPlayAudio((unsigned int)uSec * (unsigned int)UseSound / 1000000u);
+    /* Keep the fractional remainder: fMSX calls this every 8 scanlines
+     * (~509 us = 11.2 samples at 22.05 kHz); truncating to 11 each time
+     * would produce 2% fewer samples than the output consumes. */
+    static uint32_t frac = 0;
+    uint32_t acc = (uint32_t)uSec * (uint32_t)UseSound + frac;
+    unsigned int n = acc / 1000000u;
+    frac = acc - n * 1000000u;
+    RenderAndPlayAudio(n);
 }
 
 /* ==================================================================
