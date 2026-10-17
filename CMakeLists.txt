@@ -34,7 +34,7 @@ cmake_minimum_required(VERSION 3.13)
 #
 # Select with -DPLATFORM=m1|m2|dv|pc|z0 (default m2).
 # BOARD_VARIANT is kept as a legacy alias for the same choice.
-set(PLATFORM       "z0" CACHE STRING "Target platform: m1, m2, dv, pc, z0")
+set(PLATFORM       "m1" CACHE STRING "Target platform: m1, m2, dv, pc, z0")
 set_property(CACHE PLATFORM PROPERTY STRINGS m1 m2 dv pc z0)
 
 # Allow BOARD_VARIANT (uppercase) as a back-compat alias.
@@ -153,6 +153,12 @@ add_subdirectory(drivers/sdcard)
 add_subdirectory(drivers/nespad)
 add_subdirectory(drivers/ps2)
 add_subdirectory(drivers/usbhid)
+
+# The PS/2 driver is a STATIC library and includes board_config.h, which
+# falls back to PLATFORM_M2 (PS/2 on GP2/GP3) when no PLATFORM_* macro is
+# defined. Give it the platform explicitly: on M1 the keyboard is on GP0/GP1,
+# and GP2/GP3 are the SD card SCK/MOSI, so the M2 fallback breaks both.
+target_compile_definitions(ps2_driver PRIVATE PLATFORM_${BOARD_VARIANT}=1)
 
 #-----------------------------------------------------------------------------
 # HSTX HDMI / VGA drivers (verbatim copies of murmnes/frank-nes subtrees).
