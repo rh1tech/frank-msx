@@ -450,17 +450,17 @@ static const ps2_jp_remap_t PS2_JP_REMAP[] = {
     { PSC_3,       1, 0, 0x08, 1 },   /* Shift+3 -> '#' */
     { PSC_4,       1, 0, 0x10, 1 },   /* Shift+4 -> '$' */
     { PSC_5,       1, 0, 0x20, 1 },   /* Shift+5 -> '%' */
-    { PSC_6,       1, 1, 0x08, 1 },   /* Shift+6 -> '^' (MSX '^'/'~' key) */
+    { PSC_6,       1, 1, 0x08, 0 },   /* Shift+6 -> '^' (MSX '^'/'~' key, unshifted) */
     { PSC_7,       1, 0, 0x40, 1 },   /* Shift+7 -> '&' */
-    { PSC_8,       1, 2, 0x01, 1 },   /* Shift+8 -> '*'  (MSX :/* cell)   */
-    { PSC_9,       1, 1, 0x00, 1 },   /* Shift+9 -> '(' */
-    { PSC_0,       1, 1, 0x02, 1 },   /* Shift+0 -> ')' */
+    { PSC_8,       1, 2, 0x02, 1 },   /* Shift+8 -> '*'  (MSX :/* cell)   */
+    { PSC_9,       1, 1, 0x01, 1 },   /* Shift+9 -> '(' (MSX Shift+8) */
+    { PSC_0,       1, 1, 0x02, 1 },   /* Shift+0 -> ')' (MSX Shift+9) */
     /* Semicolon key: unshifted ';' lives at the same cell fMSX's
      * Keys[] uses (so unshifted path is a no-op but we keep it here
      * to make sure host Shift state doesn't bleed in). Shift+';' must
      * hit the ':' cell (row 2 bit 1, unshifted on MSX). */
     { PSC_Semi,    0, 1, 0x80, 0 },   /* ';' */
-    { PSC_Semi,    1, 2, 0x01, 0 },   /* Shift+';' -> ':' */
+    { PSC_Semi,    1, 2, 0x02, 0 },   /* Shift+';' -> ':' */
     /* Apostrophe key: host `'` -> MSX `'` = Shift+7 cell, host `"` ->
      * MSX `"` = Shift+2 cell. Both force Shift on the MSX side. */
     { PSC_Quote,   0, 0, 0x80, 1 },   /* '\'' (apostrophe) */
