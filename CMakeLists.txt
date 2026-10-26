@@ -140,6 +140,12 @@ add_subdirectory(drivers/nespad)
 add_subdirectory(drivers/ps2)
 add_subdirectory(drivers/usbhid)
 
+# The PS/2 driver is a STATIC library and includes board_config.h, which
+# falls back to PLATFORM_M2 (PS/2 on GP2/GP3) when no PLATFORM_* macro is
+# defined. Give it the platform explicitly: on M1 the keyboard is on GP0/GP1,
+# and GP2/GP3 are the SD card SCK/MOSI, so the M2 fallback breaks both.
+target_compile_definitions(ps2_driver PRIVATE PLATFORM_${BOARD_VARIANT}=1)
+
 #-----------------------------------------------------------------------------
 # HSTX HDMI / VGA drivers (verbatim copies of murmnes/frank-nes subtrees).
 # pico_hdmi/  — HSTX HDMI scanout + data-island audio (M2 HDMI).
@@ -238,11 +244,12 @@ if(VIDEO_COMPOSITE)
     target_compile_definitions(tv_driver PUBLIC PLATFORM_${BOARD_VARIANT}=1)
 endif()
 
-# I2S audio source is only compiled on platforms with an I2S DAC wired up.
-# PWM-only boards (DV / PC / Z0) skip it entirely — the pins the driver
-# references aren't defined by their board headers.
+# I2S audio source is only compiled on platforms with an I2S DAC wired up
+# (Z0: external PCM5102A module on GP10..GP12). PWM-only boards (DV / PC)
+# skip it entirely — the pins the driver references aren't defined by their
+# board headers.
 set(_AUDIO_I2S_SRC)
-if(PLATFORM STREQUAL "m1" OR PLATFORM STREQUAL "m2")
+if(PLATFORM STREQUAL "m1" OR PLATFORM STREQUAL "m2" OR PLATFORM STREQUAL "z0")
     list(APPEND _AUDIO_I2S_SRC
         drivers/audio.c
         drivers/audio_i2s_opt.S

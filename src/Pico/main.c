@@ -43,7 +43,7 @@
 #elif defined(HAS_I2S)
 #include "audio.h"
 #else
-/* Boards without an I2S DAC (DV / PC / Z0) fall back to PWM-only audio
+/* Boards without an I2S DAC (DV / PC) fall back to PWM-only audio
  * on the PIO HDMI/VGA path. The ping-pong I2S render core never runs. */
 #endif
 #include "pwm_audio.h"
@@ -219,7 +219,7 @@ void audio_dispatch_push_samples(const int16_t *buf, int count) {
      * mode is the same path. */
     (void)audio_ring_push_mono(buf, (unsigned)count);
 #else
-    /* PIO HDMI build on a PWM-only board (DV / PC / Z0): always route
+    /* PIO HDMI build on a PWM-only board (DV / PC): always route
      * through PWM regardless of which audio mode the user picked. */
     ensure_pwm_audio_initialized();
     pwm_audio_push_samples(buf, count);
@@ -269,7 +269,7 @@ static volatile bool core1_ready = false;
 
 /* ---- Video core (Core 1) on PWM-only boards with PIO HDMI/VGA ----------
  *
- * Boards without an I2S DAC (DV / PC / Z0) have no audio render core, so
+ * Boards without an I2S DAC (DV / PC) have no audio render core, so
  * Core 1 used to sit idle while the per-scanline HDMI DMA interrupt ran on
  * Core 0 next to the emulator, at top priority, and starved the rest of
  * Core 0's interrupt work. As in pico-nes / murm386 / PICO-BK, the video
@@ -493,7 +493,14 @@ int main(void) {
 #if !defined(HDMI_HSTX) && !defined(VIDEO_COMPOSITE)
     {
         int link = testPins(HDMI_BASE_PIN, HDMI_BASE_PIN + 1);
+#if defined(PLATFORM_Z0)
+        /* Waveshare RP2350-PiZero: mini-HDMI only, and GPIO32/33 is a TMDS
+         * data pair, not the clock pair the ribbon probe expects — the sink's
+         * termination makes it read like a VGA ribbon. Same as frank-micro. */
+        SELECT_VGA = false;
+#else
         SELECT_VGA = (link == 0) || (link == 0x1F);
+#endif
         printf("Video: probe link=0x%02X -> %s\n",
                (unsigned)link, SELECT_VGA ? "VGA" : "HDMI");
     }
@@ -575,7 +582,7 @@ int main(void) {
     while (!core1_ready) tight_loop_contents();
     printf("Render core ready\n");
 #else
-    /* PWM-only platforms (DV / PC / Z0): no render core — PWM audio is
+    /* PWM-only platforms (DV / PC): no render core — PWM audio is
      * filled directly on Core 0 from audio_dispatch_push_samples; Core 1
      * runs the video driver (VIDEO_ON_CORE1, see above). */
     core1_ready = true;

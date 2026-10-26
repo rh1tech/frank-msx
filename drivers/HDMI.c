@@ -503,15 +503,13 @@ static inline bool hdmi_init() {
 
     //выключение SM основной и конвертора
 
-    /* The RP2350 PIO GPIO base must be bumped to 16 or 32 when the HDMI
-     * data lanes straddle or exceed GPIO 16 / 32 — the default base is 0
-     * and the PIO can only address a 32-pin window from it. This
-     * replaces the old ZERO2 gate so every platform picks up the right
-     * base automatically. */
-#if HDMI_BASE_PIN >= 32
-    pio_set_gpio_base(PIO_VIDEO, 32);
-    pio_set_gpio_base(PIO_VIDEO_ADDR, 32);
-#elif HDMI_BASE_PIN >= 16
+    /* RP2350 PIO only supports GPIO bases 0 and 16. With base 16 the SM
+     * pin fields still use the board GPIO numbers, so HDMI_BASE_PIN=32
+     * addresses GPIO32 inside the GPIO16..47 window. Passing 32 to
+     * pio_set_gpio_base() fails (PICO_ERROR_BAD_ALIGNMENT, return value
+     * ignored here) and leaves the base at 0, so the TMDS pins on
+     * GPIO32..39 are never driven: no picture, no HDMI carrier on Z0. */
+#if HDMI_BASE_PIN >= 16
     pio_set_gpio_base(PIO_VIDEO, 16);
     pio_set_gpio_base(PIO_VIDEO_ADDR, 16);
 #endif

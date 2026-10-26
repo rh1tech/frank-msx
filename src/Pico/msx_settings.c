@@ -93,6 +93,11 @@ static const char *ONOFF_LABELS[] = { "Off", "On" };
 static const uint8_t AUDIO_CYCLE[] = {
     MSX_AUDIO_HDMI, MSX_AUDIO_I2S, MSX_AUDIO_PWM, MSX_AUDIO_DISABLED,
 };
+#elif defined(PLATFORM_Z0)
+/* Waveshare RP2350-PiZero: no analog output, only the I2S DAC module. */
+static const uint8_t AUDIO_CYCLE[] = {
+    MSX_AUDIO_I2S, MSX_AUDIO_DISABLED,
+};
 #elif defined(HAS_I2S)
 static const uint8_t AUDIO_CYCLE[] = {
     MSX_AUDIO_I2S, MSX_AUDIO_PWM, MSX_AUDIO_DISABLED,
@@ -108,6 +113,14 @@ static const uint8_t AUDIO_CYCLE[] = {
  * ResetMSX); offer nothing else in the menu and keep msx.ini values in
  * that range. */
 static void clamp_to_hardware(void) {
+#if defined(PLATFORM_Z0)
+    /* Sound goes to the I2S module only. An msx.ini written by another
+     * board's build on a shared SD card (e.g. audio=PWM from the PICO-PC)
+     * would otherwise switch GP10/GP11 to PWM and mute the module. */
+    if (g_settings.audio_mode != MSX_AUDIO_I2S &&
+        g_settings.audio_mode != MSX_AUDIO_DISABLED)
+        g_settings.audio_mode = MSX_AUDIO_I2S;
+#endif
     if (psram_present()) return;
     g_settings.model = 0;
     g_settings.ram   = 0;

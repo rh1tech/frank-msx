@@ -10,7 +10,7 @@
  * board_z0.h — Waveshare RP2350-PiZero GPIO layout for frank-msx.
  *
  * Supported video: PIO HDMI / PIO VGA on GPIO 32..39 (no TV, no HSTX).
- * Supported audio: PWM / Disabled.
+ * Supported audio: I2S (PCM5102A module on GP10..GP12) / Disabled.
  *
  * Selected when -DPLATFORM=z0. The PICO_BOARD header is overridden to
  * waveshare_rp2350_pizero in CMakeLists.txt.
@@ -25,6 +25,7 @@
 /* ---- Video capabilities ---- */
 
 /* ---- Audio capabilities ---- */
+#define HAS_I2S 1
 #define HAS_PWM 1
 
 /* ---- HDMI / VGA pins ---- */
@@ -39,8 +40,9 @@
 #define SDCARD_PIN_SPI0_MISO 40
 
 /* ---- PS/2 ---- */
-#define PS2_PIN_CLK    14
-#define PS2_PIN_DATA   15
+/* CLK GP2, DATA GP3 — as in MOS2, pico-nes and murm386 for z0p2 */
+#define PS2_PIN_CLK    2
+#define PS2_PIN_DATA   3
 
 /* ---- NES/SNES pad ---- */
 #define NESPAD_GPIO_CLK   4
@@ -50,7 +52,11 @@
 /* ---- Cassette tape input (free GPIO — EAR / CAS-IN) ---- */
 #define TAPE_IN_PIN 22
 
-/* ---- PWM audio ---- */
+/* ---- I2S audio (DIN GP10, BCK GP11, LRCK GP12) ---- */
+#define I2S_DATA_PIN       10
+#define I2S_CLOCK_PIN_BASE 11
+
+/* ---- PWM audio (same pins as I2S; not offered on z0, see msx_settings.c) ---- */
 #define PWM_PIN0 10
 #define PWM_PIN1 11
 
